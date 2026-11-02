@@ -2322,6 +2322,7 @@ function renderVehicleSheet() {
         <div class="toolbar" style="margin-bottom:15px"><button class="secondary" onclick="closeVehicle()">← Voltar para o personagem</button><span class="pill">Veículo: ${esc(v.name)}</span></div>
         <div class="sheet-tabs">${tabs.map(([id,label]) => `<button class="${activeSheetTab === id ? 'active' : 'secondary'}" onclick="activeSheetTab='${id}';render()">${label}</button>`).join('')}</div>
         <div class="layout-ficha-completa">
+            <div>${sub}</div>
             <div>
                 <div class="card">
                     <h3>💬 Chat e Rolagens da Mesa</h3>
@@ -2347,7 +2348,6 @@ function renderVehicleSheet() {
                     <button onclick="doRoll()" style="width:100%; margin-top:5px">Rolar Teste</button>
                 </div>
             </div>
-            <div>${sub}</div>
         </div>`;
     document.getElementById('mainContainer').classList.add('ficha-fullscreen');
     ['topHeader','mainToolbar','mainSessionRow','summary','tabs','mainFooter'].forEach(id => document.getElementById(id).style.display = 'none');
@@ -2768,6 +2768,7 @@ function renderApp() {
             <div class="sheet-tabs">${sheetTabs.map(([id, label]) => `<button class="${activeSheetTab === id ? 'active' : 'secondary'}" onclick="activeSheetTab='${id}';render()">${label}</button>`).join('')}</div>
             
             <div class="layout-ficha-completa">
+                <div>${subContent}</div>
                 <div>
                     <div class="card">
                         <h3>💬 Chat e Rolagens da Mesa</h3>
@@ -2793,7 +2794,6 @@ function renderApp() {
                         <button onclick="doRoll()" style="width:100%; margin-top:5px">Rolar Teste</button>
                     </div>
                 </div>
-                <div>${subContent}</div>
             </div>`;
         return;
     }
