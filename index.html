@@ -133,8 +133,12 @@
         overflow-y: auto;
         padding: 20px;
     }
-    .layout-ficha-completa { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; align-items: start; }
-    @media(max-width: 1024px) { .layout-ficha-completa { grid-template-columns: 1fr; } }
+    .ficha-conteudo {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+        width: 100%;
+    }
 </style>
 </head>
 <body>
@@ -2321,31 +2325,33 @@ function renderVehicleSheet() {
     document.getElementById('content').innerHTML = `
         <div class="toolbar" style="margin-bottom:15px"><button class="secondary" onclick="closeVehicle()">← Voltar para o personagem</button><span class="pill">Veículo: ${esc(v.name)}</span></div>
         <div class="sheet-tabs">${tabs.map(([id,label]) => `<button class="${activeSheetTab === id ? 'active' : 'secondary'}" onclick="activeSheetTab='${id}';render()">${label}</button>`).join('')}</div>
-        <div class="layout-ficha-completa">
-            <div>${sub}</div>
-            <div>
-                <div class="card">
-                    <h3>💬 Chat e Rolagens da Mesa</h3>
-                    <div id="chatFeed" class="log" style="height:280px">${(t?.logs || []).slice().reverse().map(l => `<p><span class="muted">${new Date(l.when).toLocaleTimeString()}</span><br>${esc(l.message)}</p>`).join('') || '<p>Sem rolagens no histórico.</p>'}</div>
-                    <div class="row" style="margin-top:10px">
-                        <button class="danger" onclick="clearLogs()">Limpar Chat</button>
+        <div class="ficha-conteudo">
+            ${sub}
+            <div class="card">
+                <h3>📝 Anotações</h3>
+                <textarea style="min-height:140px" onchange="update('${v.id}','notes',this.value)">${esc(v.notes || '')}</textarea>
+            </div>
+            <div class="card">
+                <h3>🎲 Teste de Atributo</h3>
+                <div class="field"><label>Atributo</label><select id="rollAttr"><option value="p">Poder</option><option value="h">Habilidade</option><option value="r">Resistência</option></select></div>
+                <div class="field"><label>Perícia Aplicável</label><select id="rollSkill"><option value="">Não treinada</option><option value="__none__">Sem perícia (2D)</option>${(v.skills || []).filter(Boolean).map(s => `<option>${esc(s)}</option>`).join('')}</select></div>
+                <div class="grid"><div class="field"><label>Modificador</label><input id="rollBonus" type="number" value="0"></div><div class="field"><label>Meta</label><input id="rollMeta" type="number" value="0"></div></div>
+                <div class="grid"><div class="field"><label>Ganhos (+D)</label><input id="rollGain" type="number" value="0"></div><div class="field"><label>Perdas (−D)</label><input id="rollLoss" type="number" value="0"></div></div>
+                <div class="field">
+                    <label>Crítico Aprimorado (Ex: 4 a 6)</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input id="rollCritStart" type="number" min="1" max="6" value="6" style="width: 100%;">
+                        <span>a</span>
+                        <input id="rollCritEnd" type="number" min="1" max="6" value="6" style="width: 100%;">
                     </div>
                 </div>
-                <div class="card">
-                    <h3>🎲 Teste de Atributo</h3>
-                    <div class="field"><label>Atributo</label><select id="rollAttr"><option value="p">Poder</option><option value="h">Habilidade</option><option value="r">Resistência</option></select></div>
-                    <div class="field"><label>Perícia Aplicável</label><select id="rollSkill"><option value="">Não treinada</option><option value="__none__">Sem perícia (2D)</option>${(v.skills || []).filter(Boolean).map(s => `<option>${esc(s)}</option>`).join('')}</select></div>
-                    <div class="grid"><div class="field"><label>Modificador</label><input id="rollBonus" type="number" value="0"></div><div class="field"><label>Meta</label><input id="rollMeta" type="number" value="0"></div></div>
-                    <div class="grid"><div class="field"><label>Ganhos (+D)</label><input id="rollGain" type="number" value="0"></div><div class="field"><label>Perdas (−D)</label><input id="rollLoss" type="number" value="0"></div></div>
-                    <div class="field">
-                        <label>Crítico Aprimorado (Ex: 4 a 6)</label>
-                        <div style="display: flex; gap: 8px; align-items: center;">
-                            <input id="rollCritStart" type="number" min="1" max="6" value="6" style="width: 100%;">
-                            <span>a</span>
-                            <input id="rollCritEnd" type="number" min="1" max="6" value="6" style="width: 100%;">
-                        </div>
-                    </div>
-                    <button onclick="doRoll()" style="width:100%; margin-top:5px">Rolar Teste</button>
+                <button onclick="doRoll()" style="width:100%; margin-top:5px">Rolar Teste</button>
+            </div>
+            <div class="card">
+                <h3>💬 Chat e Rolagens da Mesa</h3>
+                <div id="chatFeed" class="log" style="height:280px">${(t?.logs || []).slice().reverse().map(l => `<p><span class="muted">${new Date(l.when).toLocaleTimeString()}</span><br>${esc(l.message)}</p>`).join('') || '<p>Sem rolagens no histórico.</p>'}</div>
+                <div class="row" style="margin-top:10px">
+                    <button class="danger" onclick="clearLogs()">Limpar Chat</button>
                 </div>
             </div>
         </div>`;
@@ -2767,31 +2773,29 @@ function renderApp() {
             </div>
             <div class="sheet-tabs">${sheetTabs.map(([id, label]) => `<button class="${activeSheetTab === id ? 'active' : 'secondary'}" onclick="activeSheetTab='${id}';render()">${label}</button>`).join('')}</div>
             
-            <div class="layout-ficha-completa">
-                <div>${subContent}</div>
-                <div>
-                    <div class="card">
-                        <h3>💬 Chat e Rolagens da Mesa</h3>
-                        <div id="chatFeed" class="log" style="height:280px">${t.logs.slice().reverse().map(l => `<p><span class="muted">${new Date(l.when).toLocaleTimeString()}</span><br>${esc(l.message)}</p>`).join('') || '<p>Sem rolagens no histórico.</p>'}</div>
-                        <div class="row" style="margin-top:10px">
-                            <button class="danger" onclick="clearLogs()">Limpar Chat</button>
+            <div class="ficha-conteudo">
+                ${subContent}
+                <div class="card">
+                    <h3>🎲 Teste de Atributo</h3>
+                    <div class="field"><label>Atributo</label><select id="rollAttr"><option value="p">Poder</option><option value="h">Habilidade</option><option value="r">Resistência</option></select></div>
+                    <div class="field"><label>Perícia Aplicável</label><select id="rollSkill"><option value="">Não treinada</option><option value="__none__">Sem perícia (2D)</option>${c.skills.filter(Boolean).map(s => `<option>${esc(s)}</option>`).join('')}</select></div>
+                    <div class="grid"><div class="field"><label>Modificador</label><input id="rollBonus" type="number" value="0"></div><div class="field"><label>Meta</label><input id="rollMeta" type="number" value="0"></div></div>
+                    <div class="grid"><div class="field"><label>Ganhos (+D)</label><input id="rollGain" type="number" value="0"></div><div class="field"><label>Perdas (−D)</label><input id="rollLoss" type="number" value="0"></div></div>
+                    <div class="field">
+                        <label>Crítico Aprimorado (Ex: 4 a 6)</label>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <input id="rollCritStart" type="number" min="1" max="6" value="6" style="width: 100%;">
+                            <span>a</span>
+                            <input id="rollCritEnd" type="number" min="1" max="6" value="6" style="width: 100%;">
                         </div>
                     </div>
-                    <div class="card">
-                        <h3>🎲 Teste de Atributo</h3>
-                        <div class="field"><label>Atributo</label><select id="rollAttr"><option value="p">Poder</option><option value="h">Habilidade</option><option value="r">Resistência</option></select></div>
-                        <div class="field"><label>Perícia Aplicável</label><select id="rollSkill"><option value="">Não treinada</option><option value="__none__">Sem perícia (2D)</option>${c.skills.filter(Boolean).map(s => `<option>${esc(s)}</option>`).join('')}</select></div>
-                        <div class="grid"><div class="field"><label>Modificador</label><input id="rollBonus" type="number" value="0"></div><div class="field"><label>Meta</label><input id="rollMeta" type="number" value="0"></div></div>
-                        <div class="grid"><div class="field"><label>Ganhos (+D)</label><input id="rollGain" type="number" value="0"></div><div class="field"><label>Perdas (−D)</label><input id="rollLoss" type="number" value="0"></div></div>
-                        <div class="field">
-                            <label>Crítico Aprimorado (Ex: 4 a 6)</label>
-                            <div style="display: flex; gap: 8px; align-items: center;">
-                                <input id="rollCritStart" type="number" min="1" max="6" value="6" style="width: 100%;">
-                                <span>a</span>
-                                <input id="rollCritEnd" type="number" min="1" max="6" value="6" style="width: 100%;">
-                            </div>
-                        </div>
-                        <button onclick="doRoll()" style="width:100%; margin-top:5px">Rolar Teste</button>
+                    <button onclick="doRoll()" style="width:100%; margin-top:5px">Rolar Teste</button>
+                </div>
+                <div class="card">
+                    <h3>💬 Chat e Rolagens da Mesa</h3>
+                    <div id="chatFeed" class="log" style="height:280px">${t.logs.slice().reverse().map(l => `<p><span class="muted">${new Date(l.when).toLocaleTimeString()}</span><br>${esc(l.message)}</p>`).join('') || '<p>Sem rolagens no histórico.</p>'}</div>
+                    <div class="row" style="margin-top:10px">
+                        <button class="danger" onclick="clearLogs()">Limpar Chat</button>
                     </div>
                 </div>
             </div>`;
