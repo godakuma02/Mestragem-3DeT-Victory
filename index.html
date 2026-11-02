@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>3DeT Victory — Gerenciador de Mesas</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
     :root {
         --fundo-geral: #f7f7f5;
@@ -189,7 +190,6 @@
     </div>
 </main>
 <script>
-const KEY = '3det_victory_local_v1';
 const SKILLS = ['Animais', 'Arte', 'Esporte', 'Influência', 'Luta', 'Manha', 'Máquinas', 'Medicina', 'Mística', 'Percepção', 'Saber', 'Sobrevivência'];
 
 const SKILL_DESCRIPTIONS = {
@@ -210,21 +210,294 @@ const SKILL_DESCRIPTIONS = {
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now() + '_' + Math.random();
 
-let db;
-try { db = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch {}
-if (!db || !Array.isArray(db.tables)) db = { tables: [], selected: null };
+// ============================================================
+// SUPABASE — inicialização
+// ============================================================
+const SUPABASE_URL = 'https://krjavqfgivkexffgejfs.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_OBsQNeA87H2ozbc-5vH-Jw_3FFYUugp';
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const AVATAR_BUCKET = 'avatars';
+
+// ============================================================
+// ESTADO LOCAL (cache em memória — economiza egress)
+// ============================================================
+let db = { tables: [], selected: null };
 let tab = 'personagens', selectedChar = null, session = null, selectedVehicle = null;
 let activeSheetTab = 'principal';
 
 const current = () => db.tables.find(t => t.id === db.selected);
-const save = () => {
+
+// Fila de logs pendentes (chat)
+let _logsPendentes = [];
+
+// Último estado salvo por personagem (para diff)
+const _ultimoEstadoSalvo = new Map(); // id -> { ficha, nome }
+
+// ============================================================
+// PRESENÇA (heartbeat)
+// ============================================================
+let _heartbeatTimer = null;
+const HEARTBEAT_MS = 60000;
+const ONLINE_THRESHOLD_MS = 130000;
+function estaOnline(iso) {
+    if (!iso) return false;
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return false;
+    return (Date.now() - t) < ONLINE_THRESHOLD_MS;
+}
+async function baterPonto() {
+    if (!session || session.role !== 'jogador') return;
+    if (document.visibilityState !== 'visible') return;
+    if (!session.personagemId) return;
     try {
-        localStorage.setItem(KEY, JSON.stringify(db));
-        document.getElementById('status').textContent = 'Salvo localmente • ' + new Date().toLocaleTimeString('pt-BR');
-    } catch (e) {
-        alert('Falha ao salvar: ' + e.message);
+        await supabaseClient.from('personagens')
+            .update({ ultima_atualizacao: new Date().toISOString() })
+            .eq('id', session.personagemId);
+    } catch (_) {}
+}
+function iniciarHeartbeat() {
+    if (_heartbeatTimer) clearInterval(_heartbeatTimer);
+    baterPonto();
+    _heartbeatTimer = setInterval(() => {
+        if (document.visibilityState === 'visible') baterPonto();
+    }, HEARTBEAT_MS);
+}
+function pararHeartbeat() {
+    if (_heartbeatTimer) { clearInterval(_heartbeatTimer); _heartbeatTimer = null; }
+}
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && session) baterPonto();
+});
+
+// ============================================================
+// DIFF DE FICHA (envia só o que mudou)
+// ============================================================
+function comprimirDados(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) return obj.map(comprimirDados);
+    const novo = {};
+    for (const [k, v] of Object.entries(obj)) {
+        if (v === undefined || v === null) continue;
+        novo[k] = typeof v === 'object' ? comprimirDados(v) : v;
     }
-};
+    return novo;
+}
+function diffFicha(antigo, novo, path = 'ficha') {
+    const out = {};
+    if (!antigo || typeof antigo !== 'object') return { [path]: novo };
+    if (Array.isArray(novo)) {
+        if (JSON.stringify(antigo) !== JSON.stringify(novo)) out[path] = novo;
+        return out;
+    }
+    if (novo === null || typeof novo !== 'object') {
+        if (antigo !== novo) out[path] = novo;
+        return out;
+    }
+    const chaves = new Set([...Object.keys(antigo || {}), ...Object.keys(novo || {})]);
+    for (const k of chaves) {
+        Object.assign(out, diffFicha(antigo ? antigo[k] : undefined, novo ? novo[k] : undefined, `${path}/${k}`));
+    }
+    return out;
+}
+function setDeep(obj, path, value) {
+    const parts = path.split('/').filter(Boolean);
+    if (!parts.length) return;
+    let cur = obj;
+    for (let i = 0; i < parts.length - 1; i++) {
+        const k = parts[i];
+        if (!cur[k] || typeof cur[k] !== 'object') cur[k] = {};
+        cur = cur[k];
+    }
+    cur[parts[parts.length - 1]] = value;
+}
+
+// ============================================================
+// SALVAMENTO (debounce 3s + diff + sem request se só timestamp mudou)
+// ============================================================
+let _saveTimer = null;
+function save() {
+    clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(() => { _salvarTudo(); }, 3000);
+    const statusEl = document.getElementById('status');
+    if (statusEl) statusEl.textContent = 'Alterações pendentes…';
+}
+
+async function _salvarTudo() {
+    const statusEl = document.getElementById('status');
+    try {
+        // 1) Personagem atual — por DIFF
+        if (selectedChar && session) {
+            const mesa = current();
+            const char = mesa?.characters?.find(c => c.id === selectedChar);
+            if (char) {
+                const { id, _ultimaAtualizacao, accessCode, npc, ...fichaLimpa } = char;
+                const nomeAtual = char.name || 'Personagem';
+                const anterior = _ultimoEstadoSalvo.get(id);
+                let updates;
+                if (!anterior) {
+                    updates = { 'ficha': comprimirDados(fichaLimpa), 'nome': nomeAtual };
+                } else {
+                    updates = diffFicha(anterior.ficha, comprimirDados(fichaLimpa));
+                    if (anterior.nome !== nomeAtual) updates['nome'] = nomeAtual;
+                }
+                if (Object.keys(updates).length === 0) {
+                    if (statusEl) statusEl.textContent = 'Sem alterações • ' + new Date().toLocaleTimeString('pt-BR');
+                    return;
+                }
+                // Aplica o diff campo a campo via update() dedicado
+                const payload = {};
+                for (const [k, v] of Object.entries(updates)) {
+                    if (k === 'ficha') payload.ficha = v;
+                    else if (k === 'nome') payload.nome = v;
+                    else if (k.startsWith('ficha/')) {
+                        if (!payload.ficha) payload.ficha = structuredClone(anterior?.ficha || {});
+                        setDeep(payload.ficha, k.slice(6), v);
+                    }
+                }
+                payload.ultima_atualizacao = new Date().toISOString();
+                const { error } = await supabaseClient
+                    .from('personagens')
+                    .update(payload)
+                    .eq('id', char.id);
+                if (error) throw error;
+                _ultimoEstadoSalvo.set(id, { ficha: comprimirDados(fichaLimpa), nome: nomeAtual });
+            }
+        }
+        // 2) Logs pendentes (lote)
+        if (_logsPendentes.length > 0) {
+            const lote = _logsPendentes.splice(0, _logsPendentes.length);
+            const { error } = await supabaseClient.from('rolagens').insert(lote);
+            if (error) throw error;
+        }
+        if (statusEl) statusEl.textContent = 'Salvo • ' + new Date().toLocaleTimeString('pt-BR');
+    } catch (e) {
+        if (statusEl) statusEl.textContent = 'Erro ao salvar: ' + e.message;
+        console.error('Erro no salvamento:', e);
+    }
+}
+
+// ============================================================
+// LOADERS
+// ============================================================
+async function carregarMesas() {
+    const { data, error } = await supabaseClient
+        .from('mesas')
+        .select('pin, nome, mestre_nome, regras, criada_em')
+        .order('criada_em', { ascending: true });
+    if (error) { console.error('carregarMesas:', error); return; }
+    const mesasExistentes = new Map(db.tables.map(t => [t.id, t]));
+    db.tables = (data || []).map(m => {
+        const existente = mesasExistentes.get(m.pin);
+        return {
+            id: m.pin,
+            name: m.nome,
+            accessCode: m.pin,
+            masterName: m.mestre_nome,
+            regras: m.regras || {},
+            characters: existente?.characters || [],
+            notes: existente?.notes || '',
+            logs: existente?.logs || []
+        };
+    });
+    if (db.selected && !db.tables.find(t => t.id === db.selected)) db.selected = null;
+    if (!db.selected && db.tables.length) db.selected = db.tables[0].id;
+}
+
+async function carregarPersonagens(mesaPin) {
+    if (!mesaPin) return;
+    // SELECT enxuto: só o necessário para a grid e para o diff
+    const { data, error } = await supabaseClient
+        .from('personagens')
+        .select('id, codigo, nome, is_npc, ficha, ultima_atualizacao')
+        .eq('mesa_pin', mesaPin);
+    if (error) { console.error('carregarPersonagens:', error); return; }
+    const mesa = db.tables.find(t => t.id === mesaPin);
+    if (!mesa) return;
+    mesa.characters = (data || []).map(p => {
+        const ficha = (p.ficha && typeof p.ficha === 'object') ? p.ficha : {};
+        return {
+            ...ficha,
+            id: p.id,
+            name: p.nome,
+            npc: p.is_npc === true,
+            accessCode: p.codigo,
+            _ultimaAtualizacao: p.ultima_atualizacao
+        };
+    });
+    // Popula o cache de diff com o estado carregado
+    for (const c of mesa.characters) {
+        const { id, _ultimaAtualizacao, accessCode, npc, ...fichaLimpa } = c;
+        _ultimoEstadoSalvo.set(id, { ficha: comprimirDados(fichaLimpa), nome: c.name });
+    }
+}
+
+let _chatChannel = null;
+function _pararChatRealtime() {
+    if (_chatChannel) {
+        try { supabaseClient.removeChannel(_chatChannel); } catch (_) {}
+        _chatChannel = null;
+    }
+}
+// Fingerprint das mensagens locais recém-enviadas (evita duplicar via realtime)
+const _msgsLocais = [];
+function _registrarMsgLocal(texto, jogador) {
+    _msgsLocais.push({ chave: `${jogador}::${texto}`, ts: Date.now() });
+    if (_msgsLocais.length > 20) _msgsLocais.shift();
+}
+function _foiEnviadaLocalmente(texto, jogador) {
+    const agora = Date.now();
+    for (let i = _msgsLocais.length - 1; i >= 0; i--) {
+        if (agora - _msgsLocais[i].ts > 8000) _msgsLocais.splice(i, 1);
+    }
+    return _msgsLocais.some(m => m.chave === `${jogador}::${texto}`);
+}
+
+async function carregarChat(mesaPin) {
+    if (!mesaPin) return;
+    _pararChatRealtime();
+    // 1) Carga inicial única (10 mensagens)
+    const { data, error } = await supabaseClient
+        .from('rolagens')
+        .select('id, jogador_nome, texto, secreta, criada_em')
+        .eq('mesa_pin', mesaPin)
+        .order('criada_em', { ascending: false })
+        .limit(10);
+    if (error) { console.error('carregarChat:', error); return; }
+    const mesa = db.tables.find(t => t.id === mesaPin);
+    if (!mesa) return;
+    mesa.logs = (data || []).reverse().map(r => ({
+        id: String(r.id),
+        when: r.criada_em,
+        message: r.texto,
+        jogador: r.jogador_nome,
+        secreta: r.secreta === true
+    }));
+    // 2) Realtime: só INSERT, adiciona localmente sem SELECT
+    const chName = `chat-${mesaPin}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    _chatChannel = supabaseClient
+        .channel(chName)
+        .on('postgres_changes',
+            { event: 'INSERT', schema: 'public', table: 'rolagens', filter: `mesa_pin=eq.${mesaPin}` },
+            (payload) => {
+                const nova = payload.new;
+                if (!nova) return;
+                const mesaAtual = db.tables.find(t => t.id === mesaPin);
+                if (!mesaAtual) return;
+                if (mesaAtual.logs.some(l => l.id === String(nova.id))) return;
+                if (_foiEnviadaLocalmente(nova.texto, nova.jogador_nome)) return;
+                mesaAtual.logs.push({
+                    id: String(nova.id),
+                    when: nova.criada_em,
+                    message: nova.texto,
+                    jogador: nova.jogador_nome,
+                    secreta: nova.secreta === true
+                });
+                if (mesaAtual.logs.length > 20) mesaAtual.logs.shift();
+                if (mesaAtual.id === db.selected) render();
+            }
+        )
+        .subscribe();
+}
 
 function freshChar(name = 'Novo personagem', npc = false) {
     return {
@@ -248,57 +521,116 @@ function requireMaster() {
     return true;
 }
 
-function newTable() {
+async function newTable() {
     if (!requireMaster()) return;
-    let name = prompt('Nome da mesa:', 'Nova campanha');
-    if (!name?.trim()) return;
-    let t = { id: uid(), name: name.trim(), accessCode: String(Math.floor(100000 + Math.random() * 900000)), characters: [], notes: '', logs: [] };
-    db.tables.push(t); db.selected = t.id; selectedChar = null; save(); render();
+    const nome = prompt('Nome da mesa:', 'Nova campanha');
+    if (!nome?.trim()) return;
+    const pin = String(Math.floor(100000 + Math.random() * 900000));
+    const { error } = await supabaseClient.from('mesas').insert({
+        pin, nome: nome.trim(), mestre_nome: session.name
+    });
+    if (error) return alert('Erro: ' + error.message);
+    session.mesaPin = pin;
+    db.selected = pin;
+    await carregarMesas();
+    await carregarPersonagens(pin);
+    render();
 }
 
-function chooseTable(id) { db.selected = id; selectedChar = null; save(); render(); }
-function renameTable() {
-    if (!requireMaster()) return;
-    let t = current(); if (!t) return;
-    let n = prompt('Nome da mesa:', t.name);
-    if (n?.trim()) { t.name = n.trim(); save(); render(); }
+async function chooseTable(id) {
+    _pararChatRealtime();
+    db.selected = id;
+    selectedChar = null;
+    await carregarPersonagens(id);
+    await carregarChat(id);
+    render();
 }
 
-function deleteTable() {
+async function renameTable() {
     if (!requireMaster()) return;
-    let t = current();
-    if (!t || !confirm('Excluir a mesa e todos os personagens?')) return;
-    db.tables = db.tables.filter(x => x.id !== t.id);
-    db.selected = db.tables[0]?.id || null;
-    selectedChar = null; save(); render();
+    const t = current(); if (!t) return;
+    const novo = prompt('Novo nome da mesa:', t.name);
+    if (!novo?.trim()) return;
+    const { error } = await supabaseClient.from('mesas').update({ nome: novo.trim() }).eq('pin', t.id);
+    if (error) return alert('Erro: ' + error.message);
+    await carregarMesas();
+    render();
+}
+
+async function deleteTable() {
+    if (!requireMaster()) return;
+    const t = current(); if (!t) return;
+    if (!confirm('Excluir a mesa e todos os personagens?')) return;
+    const { error } = await supabaseClient.from('mesas').delete().eq('pin', t.id);
+    if (error) return alert('Erro: ' + error.message);
+    session.mesaPin = null;
+    db.selected = null;
+    await carregarMesas();
+    if (db.tables.length) {
+        db.selected = db.tables[0].id;
+        session.mesaPin = db.selected;
+        await carregarPersonagens(db.selected);
+        await carregarChat(db.selected);
+    }
+    render();
 }
 
 function setTab(x) { tab = x; render(); }
 
-function addChar(npc = false) {
-    let t = current(); if (!t) return;
-    let n = prompt(npc ? 'Nome do NPC:' : 'Nome do personagem:', npc ? 'Novo NPC' : 'Novo herói');
-    if (!n?.trim()) return;
-    let c = freshChar(n.trim(), npc);
-    c.accessCode = String(Math.floor(100000 + Math.random() * 900000));
-    t.characters.push(c); selectedChar = c.id; tab = 'ficha'; save(); render();
+async function addChar(npc = false) {
+    if (!db.selected) return alert('Selecione uma mesa primeiro.');
+    const nome = prompt(npc ? 'Nome do NPC:' : 'Nome do personagem:', npc ? 'Novo NPC' : 'Novo herói');
+    if (!nome?.trim()) return;
+    const codigo = String(Math.floor(100000 + Math.random() * 900000));
+    const ficha = freshChar(nome.trim(), npc);
+    const { data, error } = await supabaseClient.from('personagens').insert({
+        mesa_pin: db.selected,
+        codigo,
+        nome: nome.trim(),
+        is_npc: npc,
+        ficha
+    }).select('id').single();
+    if (error) return alert('Erro: ' + error.message);
+    selectedChar = data.id;
+    tab = 'ficha';
+    await carregarPersonagens(db.selected);
+    alert(`Personagem criado!\n\nCódigo de acesso: ${codigo}\n\nGuarde este código — o jogador vai usá-lo para entrar.`);
+    render();
 }
 
-function openChar(id) { selectedChar = id; tab = 'ficha'; render(); }
+async function openChar(id) { selectedChar = id; tab = 'ficha'; render(); }
 function closeCharToMenu() { tab = 'personagens'; render(); }
 
-function removeChar(id) {
+async function removeChar(id) {
     if (!requireMaster()) return;
-    let t = current();
     if (!confirm('Excluir esta ficha?')) return;
-    t.characters = t.characters.filter(c => c.id !== id);
-    selectedChar = null; save(); tab = 'personagens'; render();
+    const { error } = await supabaseClient.from('personagens').delete().eq('id', id);
+    if (error) return alert('Erro: ' + error.message);
+    if (selectedChar === id) selectedChar = null;
+    tab = 'personagens';
+    await carregarPersonagens(db.selected);
+    render();
 }
 
-function cloneChar(id) {
-    let t = current(), c = t.characters.find(x => x.id === id);
-    let copy = structuredClone(c); copy.id = uid(); copy.name += ' (cópia)';
-    t.characters.push(copy); save(); render();
+async function cloneChar(id) {
+    const mesa = current();
+    const c = mesa?.characters.find(x => x.id === id);
+    if (!c) return;
+    const codigo = String(Math.floor(100000 + Math.random() * 900000));
+    const fichaCopia = { ...c, name: c.name + ' (cópia)' };
+    delete fichaCopia.id;
+    delete fichaCopia._ultimaAtualizacao;
+    const { error } = await supabaseClient.from('personagens').insert({
+        mesa_pin: db.selected,
+        codigo,
+        nome: fichaCopia.name,
+        is_npc: c.npc === true,
+        ficha: fichaCopia
+    });
+    if (error) return alert('Erro: ' + error.message);
+    alert(`Cópia criada! Código: ${codigo}`);
+    await carregarPersonagens(db.selected);
+    render();
 }
 
 function update(id, key, value) {
@@ -322,21 +654,97 @@ function update(id, key, value) {
     if (['p', 'h', 'r'].includes(key)) render();
 }
 
+// ============================================================
+// COMPRESSÃO + UPLOAD DE AVATAR NO STORAGE
+// ============================================================
+async function comprimirImagem(file, maxLado = 256, qualidade = 0.55) {
+    if (!file) return null;
+    const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = e => res(e.target.result);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+    });
+    const img = await new Promise((res, rej) => {
+        const i = new Image();
+        i.onload = () => res(i);
+        i.onerror = rej;
+        i.src = dataUrl;
+    });
+    let { width, height } = img;
+    if (width > maxLado || height > maxLado) {
+        const ratio = Math.min(maxLado / width, maxLado / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+    return await new Promise(res => canvas.toBlob(res, 'image/jpeg', qualidade));
+}
+
+async function uploadAvatar(file) {
+    if (!file) return null;
+    try {
+        const blob = await comprimirImagem(file);
+        if (!blob) return null;
+        const pasta = session?.personagemId || session?.name || 'anon';
+        const nomeArq = `${pasta}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
+        const { data, error } = await supabaseClient.storage
+            .from(AVATAR_BUCKET)
+            .upload(nomeArq, blob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false });
+        if (error) { console.error('upload avatar:', error); return null; }
+        const { data: urlData } = supabaseClient.storage.from(AVATAR_BUCKET).getPublicUrl(data.path);
+        return urlData.publicUrl;
+    } catch (e) {
+        console.error('uploadAvatar:', e);
+        return null;
+    }
+}
+
+async function apagarAvatarAntigo(url) {
+    if (!url || typeof url !== 'string') return;
+    if (!url.includes(`/storage/v1/object/public/${AVATAR_BUCKET}/`)) return;
+    try {
+        const m = url.match(new RegExp(`/${AVATAR_BUCKET}/(.+)$`));
+        if (!m) return;
+        await supabaseClient.storage.from(AVATAR_BUCKET).remove([m[1]]);
+    } catch (_) {}
+}
+
 function setCharPhoto(id, input) {
-    let c = current()?.characters.find(x => x.id === id);
-    if (!c && currentVehicle()?.id === id) c = currentVehicle();
+    const c = current()?.characters.find(x => x.id === id) || currentVehicle();
     if (!c) return;
     const file = input.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = e => { c.photo = e.target.result; save(); render(); };
-    reader.readAsDataURL(file);
+    const statusEl = document.getElementById('status');
+    if (statusEl) statusEl.textContent = 'Enviando imagem…';
+    const fotoAntiga = c.photo || '';
+    // Pré-visualização instantânea (sem ir ao banco)
+    const previewUrl = URL.createObjectURL(file);
+    c.photo = previewUrl; render();
+    uploadAvatar(file).then(async (novaUrl) => {
+        URL.revokeObjectURL(previewUrl);
+        if (!novaUrl) {
+            c.photo = fotoAntiga;
+            if (statusEl) statusEl.textContent = 'Falha ao enviar imagem';
+            render();
+            return;
+        }
+        c.photo = novaUrl;
+        save();
+        render();
+        if (fotoAntiga && fotoAntiga !== novaUrl) await apagarAvatarAntigo(fotoAntiga);
+        if (statusEl) statusEl.textContent = 'Foto atualizada • ' + new Date().toLocaleTimeString('pt-BR');
+    });
+    input.value = '';
 }
 
 function clearCharPhoto(id) {
-    let c = current()?.characters.find(x => x.id === id);
-    if (!c && currentVehicle()?.id === id) c = currentVehicle();
+    const c = current()?.characters.find(x => x.id === id) || currentVehicle();
     if (!c) return;
+    const antiga = c.photo || '';
     c.photo = ''; save(); render();
+    if (antiga) apagarAvatarAntigo(antiga);
 }
 
 function maxResource(c, key) { return Math.max(1, (key === 'pa' ? c.p : key === 'pm' ? c.h : c.r) * (key === 'pa' ? 1 : 5)); }
@@ -359,9 +767,28 @@ function setResource(id, key, value) {
 }
 
 function logMessage(message) {
-    let t = current(); if (!t) return;
-    t.logs.push({ id: uid(), when: new Date().toISOString(), message });
-    save(); render();
+    const mesa = current();
+    if (!mesa) return;
+    const jogador = session?.name || 'Jogador';
+    const entry = {
+        id: uid(),
+        when: new Date().toISOString(),
+        message,
+        jogador,
+        secreta: false
+    };
+    mesa.logs.push(entry);
+    if (mesa.logs.length > 20) mesa.logs.shift();
+    _registrarMsgLocal(message, jogador);
+    _logsPendentes.push({
+        mesa_pin: mesa.id,
+        personagem_id: selectedChar || null,
+        jogador_nome: jogador,
+        texto: message,
+        secreta: false
+    });
+    save();
+    render();
 }
 
 function roll(n) { return Array.from({ length: n }, () => 1 + Math.floor(Math.random() * 6)); }
@@ -388,9 +815,6 @@ function doRoll() {
     let total = dice.reduce((x, y) => x + y, 0) + Number(c[a]) + bonus + crit * Number(c[a]);
     let result = meta ? (total >= meta ? 'SUCESSO' : 'FALHA') : 'sem meta';
     logMessage(`${c.name}: ${a.toUpperCase()}${skill && skill !== '__none__' ? ' / ' + skill : ''} | ${n}D [${dice.join(', ')}] + Atributo ${c[a]} + Mod ${bonus} + Crít ${crit} = ${total} | ${result}${meta ? ' (meta ' + meta + ')' : ''}`);
-    
-    // Restaura os valores selecionados após a re-renderização
-    document.getElementById('rollAttr').value = a;
     document.getElementById('rollSkill').value = skill;
     document.getElementById('rollBonus').value = bonus;
     document.getElementById('rollGain').value = gain;
@@ -400,7 +824,16 @@ function doRoll() {
     document.getElementById('rollCritEnd').value = critEnd;
 }
 
-function clearLogs() { let t = current(); if (t) { t.logs = []; save(); render(); } }
+async function clearLogs() {
+    if (!requireMaster()) return;
+    const mesa = current(); if (!mesa) return;
+    const { error } = await supabaseClient.from('rolagens').delete().eq('mesa_pin', mesa.id);
+    if (error) return alert('Erro: ' + error.message);
+    mesa.logs = [];
+    _logsPendentes = [];
+    _msgsLocais.length = 0;
+    render();
+}
 
 function exportData() {
     let blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
@@ -1804,7 +2237,7 @@ function freshVehicle(name = 'Novo veículo') {
 function addVehicle() {
     const c = currentCharacter(); if (!c) return;
     ensureCatalog(c);
-    const n = prompt('Nome do veículo:', 'Novo veículo');
+    const n = prompt('Nome:', 'Novo veículo ou companheiro');
     if (!n || !n.trim()) return;
     const v = freshVehicle(n.trim());
     v.isVehicle = true;
@@ -1844,15 +2277,15 @@ function updateVehicle(vId, key, value) {
 function renderVehiclesTab(c) {
     ensureCatalog(c);
     const cards = (c.vehicles || []).map((v, i) => `<article class="card">
-        <h3>${esc(v.name)} <span class="pill">Veículo</span></h3>
+        <h3>${esc(v.name)} <span class="pill">Subficha</span></h3>
         <p class="muted">P ${v.p} • H ${v.h} • R ${v.r}</p>
         <div class="row" style="margin-top:12px">
-            <button onclick="openVehicle('${c.id}','${v.id}')">Abrir veículo</button>
+            <button onclick="openVehicle('${c.id}','${v.id}')">Abrir subficha</button>
             <button class="danger" onclick="removeVehicle(${i})">Excluir</button>
         </div>
     </article>`).join('');
-    return `<div class="card"><h3>Veículos <button onclick="addVehicle()">+ Adicionar veículo</button></h3>
-        <div class="cards">${cards || '<p class="muted">Nenhum veículo cadastrado.</p>'}</div>
+    return `<div class="card"><h3>Subfichas <button onclick="addVehicle()">+ Adicionar subficha</button></h3>
+        <div class="cards">${cards || '<p class="muted">Nenhuma subficha cadastrada.</p>'}</div>
     </div>`;
 }
 function renderVehicleSheet() {
@@ -2219,6 +2652,13 @@ function renderApp() {
     let isMaster = session?.role === 'mestre';
     if (selectedVehicle) { renderVehicleSheet(); return; }
 
+    // [ONLINE] Garante que os dados da mesa selecionada estejam carregados
+    if (t && !t._carregado) {
+        t._carregado = true;
+        carregarPersonagens(t.id).then(() => { t._carregado = true; render(); });
+        carregarChat(t.id).then(() => render());
+    }
+
     document.getElementById('tableSelect').innerHTML = db.tables.length ? db.tables.map(x => `<option value="${x.id}" ${x.id === db.selected ? 'selected' : ''}>${esc(x.name)}</option>`).join('') : '<option>Sem mesas</option>';
     document.getElementById('summary').innerHTML = t ? `<div class="stat"><strong>${t.characters.filter(c => !c.npc).length}</strong>Personagens</div><div class="stat"><strong>${t.characters.filter(c => c.npc).length}</strong>NPCs</div><div class="stat"><strong>${t.logs.length}</strong>Registros</div>` : '';
 
@@ -2250,16 +2690,34 @@ function renderApp() {
 
     if (tab === 'personagens') {
         out.innerHTML = `<div class="row"><button onclick="addChar(false)">+ Personagem</button><button class="secondary" onclick="addChar(true)">+ NPC</button></div>
-        <div class="cards" style="margin-top:15px">${t.characters.map(c => `<article class="card"><h3>${esc(c.name)} <span class="pill">${c.npc ? 'NPC' : 'Jogador'}</span></h3><p class="muted">${esc(c.player || 'Sem jogador atribuído')}</p><p>P ${c.p} • H ${c.h} • R ${c.r}</p><div class="row" style="margin-top:12px"><button onclick="openChar('${c.id}')">Abrir ficha em Tela Cheia</button><button class="secondary" onclick="cloneChar('${c.id}')">Duplicar</button><button class="danger" onclick="removeChar('${c.id}')">Excluir</button></div></article>`).join('') || '<p class="notice">Nenhuma ficha criada nesta mesa.</p>'}</div>`;
+        <div class="cards" style="margin-top:15px">${t.characters.map(c => `<article class="card">
+            <h3>${esc(c.name)} <span class="pill">${c.npc ? 'NPC' : 'Jogador'}</span></h3>
+            <p class="muted">${esc(c.player || 'Sem jogador atribuído')}</p>
+            <p style="margin-top:6px;"><span class="pill" style="background:var(--primaria);color:#2b2b2b;font-weight:bold;font-family:monospace;font-size:13px;">🔑 ${esc(c.accessCode || '—')}</span></p>
+            <p>P ${c.p} • H ${c.h} • R ${c.r}</p>
+            <div class="row" style="margin-top:12px">
+                <button onclick="openChar('${c.id}')">Abrir ficha em Tela Cheia</button>
+                <button class="secondary" onclick="cloneChar('${c.id}')">Duplicar</button>
+                <button class="danger" onclick="removeChar('${c.id}')">Excluir</button>
+            </div>
+        </article>`).join('') || '<p class="notice">Nenhuma ficha criada nesta mesa.</p>'}</div>`;
         return;
     }
 
     if (tab === 'ficha') {
         let c = t.characters.find(x => x.id === selectedChar) || t.characters[0];
-        if (!c) { out.innerHTML = '<div class="notice">Crie um personagem ou NPC primeiro.</div>'; return; }
+        if (!c) {
+            // [ONLINE] Personagens ainda não carregaram — pede para carregar
+            if (!t._carregado && t.id) {
+                t._carregado = true;
+                carregarPersonagens(t.id).then(() => render());
+            }
+            out.innerHTML = '<div class="notice">Carregando personagens…</div>';
+            return;
+        }
         selectedChar = c.id;
 
-        let sheetTabs = [['principal', 'Ficha Principal'], ['pericias', 'Perícias'], ['vantagens', 'Vantagens e Desvantagens'], ['kits', 'Kits de Personagem'], ['inventario', 'Inventário'], ['tecnicas', 'Técnicas'], ['refeicoes', 'Refeições'], ['artefatos', 'Artefatos'], ['veiculos', 'Veículos']];
+        let sheetTabs = [['principal', 'Ficha Principal'], ['pericias', 'Perícias'], ['vantagens', 'Vantagens e Desvantagens'], ['kits', 'Kits de Personagem'], ['inventario', 'Inventário'], ['tecnicas', 'Técnicas'], ['refeicoes', 'Refeições'], ['artefatos', 'Artefatos'], ['veiculos', 'Subfichas']];
 
         let subContent = '';
         if (activeSheetTab === 'principal') {
@@ -2303,6 +2761,8 @@ function renderApp() {
                     ${isMaster ? `<button class="secondary" onclick="closeCharToMenu()">← Voltar para Fichas</button>` : ''}
                     <select onchange="openChar(this.value)" style="max-width:250px">${t.characters.map(x => `<option value="${x.id}" ${x.id === c.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
                     <span class="pill">${c.npc ? 'NPC' : 'Personagem'}</span>
+                    ${isMaster ? `<span class="pill" style="background:var(--primaria);color:#2b2b2b;font-weight:bold;font-family:monospace;font-size:13px;" title="Código de acesso do jogador">🔑 ${esc(c.accessCode || '—')}</span>` : ''}
+                    <button class="secondary" onclick="logout()" title="Sair da mesa">🚪 Sair</button>
                 </div>
             </div>
             <div class="sheet-tabs">${sheetTabs.map(([id, label]) => `<button class="${activeSheetTab === id ? 'active' : 'secondary'}" onclick="activeSheetTab='${id}';render()">${label}</button>`).join('')}</div>
@@ -2347,38 +2807,105 @@ function render() { renderApp(); }
 const currentCharacter = () => current()?.characters.find(x => x.id === selectedChar);
 function infoChat(title, desc) { logMessage(`ℹ ${title}: ${desc}`); }
 
-function createTableAsMaster() {
-    let pin = document.getElementById('pinInput').value.trim(), name = document.getElementById('nomeInput').value.trim();
-    if (!/^\d{6}$/.test(pin) || !name) return document.getElementById('loginError').textContent = 'Informe PIN de 6 dígitos e seu nome.';
-    let t = { id: uid(), name: 'Campanha ' + pin, accessCode: pin, masterName: name, characters: [], notes: '', logs: [] };
-    db.tables.push(t); db.selected = t.id; session = { role: 'mestre', name }; save();
-    document.getElementById('loginPanel').classList.add('hidden'); document.getElementById('appPanel').classList.remove('hidden'); render();
+async function createTableAsMaster() {
+    const pin = document.getElementById('pinInput').value.trim();
+    const nome = document.getElementById('nomeInput').value.trim();
+    if (!/^\d{6}$/.test(pin)) return document.getElementById('loginError').textContent = 'PIN de 6 dígitos obrigatório.';
+    if (!nome) return document.getElementById('loginError').textContent = 'Informe seu nome.';
+
+    const { data: existente } = await supabaseClient.from('mesas').select('pin').eq('pin', pin).maybeSingle();
+    if (existente) return document.getElementById('loginError').textContent = 'PIN já em uso. Escolha outro.';
+
+    const { error } = await supabaseClient.from('mesas').insert({
+        pin, nome: 'Campanha ' + pin, mestre_nome: nome
+    });
+    if (error) return document.getElementById('loginError').textContent = 'Erro: ' + error.message;
+
+    session = { role: 'mestre', name: nome, mesaPin: pin };
+    db.selected = pin;
+    await carregarMesas();
+    await carregarPersonagens(pin);
+    await carregarChat(pin);
+    document.getElementById('loginPanel').classList.add('hidden');
+    document.getElementById('appPanel').classList.remove('hidden');
+    render();
 }
 
-function loginAsMaster() {
-    let pin = document.getElementById('pinInput').value.trim();
-    let t = db.tables.find(x => x.accessCode === pin);
-    if (!t) return document.getElementById('loginError').textContent = 'Mesa não encontrada.';
-    session = { role: 'mestre', name: t.masterName || 'Mestre' }; db.selected = t.id;
-    document.getElementById('loginPanel').classList.add('hidden'); document.getElementById('appPanel').classList.remove('hidden'); render();
+async function loginAsMaster() {
+    const pin = document.getElementById('pinInput').value.trim();
+    const nome = document.getElementById('nomeInput').value.trim();
+    if (!/^\d{6}$/.test(pin)) return document.getElementById('loginError').textContent = 'PIN de 6 dígitos obrigatório.';
+    if (!nome) return document.getElementById('loginError').textContent = 'Informe seu nome.';
+
+    const { data, error } = await supabaseClient.from('mesas').select('pin, nome, mestre_nome').eq('pin', pin).maybeSingle();
+    if (error || !data) return document.getElementById('loginError').textContent = 'Mesa não encontrada.';
+
+    session = { role: 'mestre', name: nome, mesaPin: pin };
+    db.selected = pin;
+    await carregarMesas();
+    await carregarPersonagens(pin);
+    await carregarChat(pin);
+    document.getElementById('loginPanel').classList.add('hidden');
+    document.getElementById('appPanel').classList.remove('hidden');
+    render();
 }
 
-function loginAsPlayer() {
-    let pin = document.getElementById('pinInput').value.trim(), name = document.getElementById('nomeInput').value.trim(), charCode = document.getElementById('codigoPersonagemInput').value.trim();
-    let t = db.tables.find(x => x.accessCode === pin);
-    if (!t) return document.getElementById('loginError').textContent = 'Mesa não encontrada.';
-    let c = t.characters.find(x => x.accessCode === charCode);
-    if (!c) return document.getElementById('loginError').textContent = 'Código do personagem não encontrado.';
-    session = { role: 'jogador', name, tableId: t.id, characterId: c.id }; db.selected = t.id; selectedChar = c.id; tab = 'ficha';
-    document.getElementById('loginPanel').classList.add('hidden'); document.getElementById('appPanel').classList.remove('hidden'); render();
+async function loginAsPlayer() {
+    const pin = document.getElementById('pinInput').value.trim();
+    const nome = document.getElementById('nomeInput').value.trim();
+    const codigo = document.getElementById('codigoPersonagemInput').value.trim();
+    if (!/^\d{6}$/.test(pin)) return document.getElementById('loginError').textContent = 'PIN da mesa inválido.';
+    if (!nome) return document.getElementById('loginError').textContent = 'Informe seu nome.';
+    if (!/^\d{6}$/.test(codigo)) return document.getElementById('loginError').textContent = 'Código do personagem inválido.';
+
+    const { data, error } = await supabaseClient
+        .from('personagens')
+        .select('id, nome, codigo, is_npc, ficha')
+        .eq('mesa_pin', pin).eq('codigo', codigo).maybeSingle();
+    if (error || !data) return document.getElementById('loginError').textContent = 'Código não encontrado nesta mesa.';
+
+    session = { role: 'jogador', name: nome, mesaPin: pin, personagemId: data.id, personagemCodigo: codigo };
+    db.selected = pin;
+    selectedChar = data.id;
+    tab = 'ficha';
+    await carregarMesas();
+    await carregarPersonagens(pin);
+    await carregarChat(pin);
+    // Presença do jogador
+    try {
+        await supabaseClient.from('personagens')
+            .update({ ultima_atualizacao: new Date().toISOString() })
+            .eq('id', data.id);
+    } catch (_) {}
+    iniciarHeartbeat();
+    document.getElementById('loginPanel').classList.add('hidden');
+    document.getElementById('appPanel').classList.remove('hidden');
+    render();
 }
 
-function logout() { session = null; document.getElementById('appPanel').classList.add('hidden'); document.getElementById('loginPanel').classList.remove('hidden'); }
-
-if (!db.tables.length) {
-    let t = { id: uid(), name: 'Mesa Principal', accessCode: '123456', masterName: 'Mestre', characters: [], notes: '', logs: [] };
-    db.tables.push(t); db.selected = t.id; save();
+function logout() {
+    // Tenta marcar offline antes de sair
+    if (session?.role === 'jogador' && session.personagemId) {
+        try {
+            supabaseClient.from('personagens')
+                .update({ ultima_atualizacao: new Date(0).toISOString() })
+                .eq('id', session.personagemId);
+        } catch (_) {}
+    }
+    pararHeartbeat();
+    _pararChatRealtime();
+    _ultimoEstadoSalvo.clear();
+    _logsPendentes = [];
+    session = null; selectedChar = null; selectedVehicle = null;
+    db.selected = null;
+    document.getElementById('appPanel').classList.add('hidden');
+    document.getElementById('loginPanel').classList.remove('hidden');
+    document.getElementById('loginError').textContent = '';
 }
+
+// [ONLINE] Não cria mais mesa local automaticamente.
+// As mesas são criadas no Supabase pelo mestre (botão "Criar mesa").
+document.getElementById('status').textContent = 'Pronto • aguardando login';
 </script>
 <style>.log p{white-space:pre-wrap;}</style>
 <script>
