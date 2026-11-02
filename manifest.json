@@ -1,11 +1,11 @@
 {
-  "name": "Tormenta Alpha - Fichas",
+  "name": "Mestragem 3DeT Victory",
   "version": "1.0.0",
   "manifest_version": 1,
   "action": {
     "title": "Abrir Ficha",
     "icon": "https://cdn-icons-png.flaticon.com/512/1149/1149636.png",
-    "popover": "https://godakuma.github.io/Mestragem-Tormenta-Alpha/index.html",
+    "popover": "xxx",
     "height": 680,
     "width": 580
   }
