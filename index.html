@@ -711,8 +711,8 @@ async function uploadAvatar(file) {
         const nomeArq = `${pasta}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
         const { data, error } = await supabaseClient.storage
             .from(AVATAR_BUCKET)
-            .upload(nomeArq, blob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: false });
-        if (error) { console.error('upload avatar:', error); return null; }
+            .upload(nomeArq, blob, { contentType: 'image/jpeg', cacheControl: '31536000', upsert: true });
+        if (error) { console.error('upload avatar:', error); alert('Falha no upload: ' + error.message); return null; }
         const { data: urlData } = supabaseClient.storage.from(AVATAR_BUCKET).getPublicUrl(data.path);
         return urlData.publicUrl;
     } catch (e) {
