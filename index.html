@@ -1918,6 +1918,7 @@ function announceCondition(c, condName) {
 }
 
 function renderConditionsTab(c) {
+    window._currentConditionTarget = c;
     if (!c) return '';
     ensureCatalog(c);
     
@@ -1928,7 +1929,7 @@ function renderConditionsTab(c) {
                 const isChecked = c.activeConditions[cond.name] === true;
                 return `<div class="catalogrow" style="margin: 0 !important;">
                     <label class="skill-cost" title="Ativar/Desativar condição" style="white-space:nowrap;">
-                        <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCondition(currentCharacter(), '${esc(cond.name)}')">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCondition(window._currentConditionTarget, '${esc(cond.name)}')">
                     </label>
                     <span style="font-weight: 600; font-size: 13px;">${esc(cond.name)}</span>
                     <button type="button" title="Ver regra completa" onclick="showConditionInfo('${esc(cond.name)}')">🔍</button>
@@ -2539,7 +2540,6 @@ function renderVehicleSheet() {
     const tabs = [['principal','Ficha Principal'],['pericias','Perícias'],['vantagens','Vantagens e Desvantagens'],['kits','Kits'],['inventario','Inventário'],['tecnicas','Técnicas'],['refeicoes','Refeições'],['artefatos','Artefatos'],['condicoes','Condições']];
     const t = current();
     document.getElementById('content').innerHTML = `
-        ${renderConditionsBadge()}
         <div class="toolbar" style="margin-bottom:15px"><button class="secondary" onclick="closeVehicle()">← Voltar para o personagem</button><span class="pill">Veículo: ${esc(v.name)}</span></div>
         <div class="sheet-tabs">${tabs.map(([id,label]) => `<button class="${activeSheetTab === id ? 'active' : 'secondary'}" onclick="activeSheetTab='${id}';render()">${label}</button>`).join('')}</div>
         <div class="ficha-conteudo">
@@ -2980,7 +2980,6 @@ function renderApp() {
         }
 
         out.innerHTML = `
-            ${renderConditionsBadge()}
             <div class="toolbar" style="margin-bottom:15px">
                 <div class="row">
                     ${isMaster ? `<button class="secondary" onclick="closeCharToMenu()">← Voltar para Fichas</button>` : ''}
