@@ -1910,6 +1910,124 @@ function renderConditionsTab(c) {
         </div>
     </div>`;
 }
+
+function masterClearAllConditions() {
+    if (!requireMaster()) return;
+    if (!confirm('Atenção: Isso removerá TODAS as condições ativas de TODOS os personagens da mesa. Continuar?')) return;
+    
+    const mesa = current();
+    if (!mesa) return;
+    
+    let alterou = false;
+    mesa.characters.forEach(c => {
+        if (c.activeConditions && Object.keys(c.activeConditions).length > 0) {
+            c.activeConditions = {};
+            alterou = true;
+        }
+    });
+    
+    if (alterou) {
+        save();
+        if (selectedChar) render(); 
+    }
+}
+
+function masterRemoveCondition(charId, condName) {
+    if (!requireMaster()) return;
+    
+    const mesa = current();
+    if (!mesa) return;
+    const c = mesa.characters.find(x => x.id === charId);
+    if (!c || !c.activeConditions) return;
+    
+    if (c.activeConditions[condName]) {
+        delete c.activeConditions[condName];
+        save();
+        if (selectedChar === charId) render();
+    }
+}
+
+function renderConditionsBadge() {
+    const mesa = current();
+    if (!mesa) return '';
+    
+    const afetados = mesa.characters.filter(c => c.activeConditions && Object.keys(c.activeConditions).length > 0);
+    
+    if (afetados.length === 0) return '';
+
+    const isMaster = session?.role === 'mestre';
+    
+    let html = `<div class="card" style="border-left: 4px solid var(--perigo); background: rgba(255, 235, 235, 0.5); margin-bottom: 15px;">
+        <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
+            <h3 style="margin: 0; color: var(--perigo-forte);">🚨 Condições Ativas na Mesa</h3>
+            ${isMaster ? `<button class="danger" onclick="masterClearAllConditions()">Limpar Todas as Condições</button>` : ''}
+        </div>
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px;">
+            ${afetados.map(c => {
+                const conds = Object.keys(c.activeConditions).map(condName => `
+                    <span class="pill" style="display: inline-flex; align-items: center; gap: 5px; background: var(--perigo); color: white; margin: 2px;">
+                        ${esc(condName)}
+                        ${isMaster ? `<button class="danger" style="padding: 0 4px; height: 18px; font-size: 10px; background: transparent; border: 1px solid white;" title="Remover do personagem" onclick="masterRemoveCondition('${c.id}', '${esc(condName)}')">×</button>` : ''}
+                    </span>
+                `).join('');
+                
+                return `<div style="background: var(--fundo-painel-claro); padding: 10px; border-radius: 8px; border: 1px solid var(--borda-clara);">
+                    <strong style="display: block; margin-bottom: 5px; color: var(--texto);">${esc(c.name)}</strong>
+                    <div>${conds}</div>
+                </div>`;
+            }).join('')}
+        </div>
+    </div>`;
+    return html;
+}
+    // Filtra apenas quem tem condições ativas
+    const afetados = mesa.characters.filter(c => c.activeConditions && Object.keys(c.activeConditions).length > 0);
+    
+    if (afetados.length === 0) return ''; // Se ninguém tem condição, não mostra nada
+
+    const isMaster = session?.role === 'mestre';
+    
+    let html = `<div class="card" style="border-left: 4px solid var(--perigo); background: rgba(255, 235, 235, 0.5); margin-bottom: 15px;">
+        <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
+            <h3 style="margin: 0; color: var(--perigo-forte);">🚨 Condições Ativas na Mesa</h3>
+            ${isMaster ? `<button class="danger" onclick="masterClearAllConditions()">Limpar Todas as Condições</button>` : ''}
+        </div>
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px;">
+            ${afetados.map(c => {
+                const conds = Object.keys(c.activeConditions).map(condName => `
+                    <span class="pill" style="display: inline-flex; align-items: center; gap: 5px; background: var(--perigo); color: white; margin: 2px;">
+                        ${esc(condName)}
+                        ${isMaster ? `<button class="danger" style="padding: 0 4px; height: 18px; font-size: 10px; background: transparent; border: 1px solid white;" title="Remover do personagem" onclick="masterRemoveCondition('${c.id}', '${esc(condName)}')">×</button>` : ''}
+                    </span>
+                `).join('');
+                
+                return `<div style="background: var(--fundo-painel-claro); padding: 10px; border-radius: 8px; border: 1px solid var(--borda-clara);">
+                    <strong style="display: block; margin-bottom: 5px; color: var(--texto);">${esc(c.name)}</strong>
+                    <div>${conds}</div>
+                </div>`;
+            }).join('')}
+        </div>
+    </div>`;
+    return html;
+}
+
+    return `<div class="card"><h3>⚔️ Condições e Status</h3>
+        <p class="muted">Marque as condições ativas. Clique na lupa para ver as regras ou no "i" para enviar ao chat.</p>
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px;">
+            ${CONDICOES.map(cond => {
+                const isChecked = c.activeConditions[cond.name] === true;
+                return `<div class="catalogrow" style="margin: 0 !important;">
+                    <label class="skill-cost" title="Ativar/Desativar condição" style="white-space:nowrap;">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCondition(currentCharacter(), '${esc(cond.name)}')">
+                    </label>
+                    <span style="font-weight: 600; font-size: 13px;">${esc(cond.name)}</span>
+                    <button type="button" title="Ver regra completa" onclick="showConditionInfo('${esc(cond.name)}')">🔍</button>
+                    <button type="button" title="Enviar ao chat" onclick="announceCondition(currentCharacter(), '${esc(cond.name)}')">i</button>
+                </div>`;
+            }).join('')}
+        </div>
+    </div>`;
+}
 function ensureCatalog(c) {
     if (!c.entries) c.entries = { vantagens: [], desvantagens: [], tecnicas: [] };
     if (!c.kits) c.kits = [];
@@ -2411,6 +2529,7 @@ function renderVehicleSheet() {
     const tabs = [['principal','Ficha Principal'],['pericias','Perícias'],['vantagens','Vantagens e Desvantagens'],['kits','Kits'],['inventario','Inventário'],['tecnicas','Técnicas'],['refeicoes','Refeições'],['artefatos','Artefatos'],['condicoes','Condições']];
     const t = current();
     document.getElementById('content').innerHTML = `
+        ${renderConditionsBadge()}
         <div class="toolbar" style="margin-bottom:15px"><button class="secondary" onclick="closeVehicle()">← Voltar para o personagem</button><span class="pill">Veículo: ${esc(v.name)}</span></div>
         <div class="sheet-tabs">${tabs.map(([id,label]) => `<button class="${activeSheetTab === id ? 'active' : 'secondary'}" onclick="activeSheetTab='${id}';render()">${label}</button>`).join('')}</div>
         <div class="ficha-conteudo">
@@ -2852,6 +2971,7 @@ function renderApp() {
         }
 
         out.innerHTML = `
+            ${renderConditionsBadge()}
             <div class="toolbar" style="margin-bottom:15px">
                 <div class="row">
                     ${isMaster ? `<button class="secondary" onclick="closeCharToMenu()">← Voltar para Fichas</button>` : ''}
