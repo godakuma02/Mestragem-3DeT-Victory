@@ -154,6 +154,25 @@
     .ficha-conteudo > .card.chat-card { order: 2; }
     .ficha-conteudo > .card.notas-card { order: 3; }
     .ficha-conteudo > *:not(.card) { order: 10; }
+    .conditions-modal-overlay {
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.6); z-index: 10000;
+        display: flex; align-items: center; justify-content: center;
+        padding: 20px;
+    }
+    .conditions-modal-content {
+        background: var(--fundo-painel-claro); border-radius: 12px;
+        padding: 20px; width: 100%; max-width: 600px; max-height: 80vh;
+        overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }
+    .conditions-badge-btn {
+        position: fixed; bottom: 20px; right: 20px; z-index: 9999;
+        background: var(--perigo); color: white; border: none;
+        border-radius: 30px; padding: 12px 20px; font-weight: bold;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3); cursor: pointer;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .conditions-badge-btn:hover { filter: brightness(1.1); }
 </style>
 </head>
 <body>
@@ -1961,33 +1980,63 @@ function renderConditionsBadge() {
     if (!mesa) return '';
     
     const afetados = mesa.characters.filter(c => c.activeConditions && Object.keys(c.activeConditions).length > 0);
-    
     if (afetados.length === 0) return '';
+
+    let totalConds = 0;
+    afetados.forEach(c => totalConds += Object.keys(c.activeConditions).length);
+
+    return `<button class="conditions-badge-btn" onclick="openConditionsModal()" title="Ver condições ativas na mesa">
+        🚨 ${totalConds} Condições Ativas
+    </button>`;
+}
+    function openConditionsModal() {
+    const mesa = current();
+    if (!mesa) return;
+    
+    const afetados = mesa.characters.filter(c => c.activeConditions && Object.keys(c.activeConditions).length > 0);
+    if (afetados.length === 0) return;
 
     const isMaster = session?.role === 'mestre';
     
-    let html = `<div class="card" style="border-left: 4px solid var(--perigo); background: rgba(255, 235, 235, 0.5); margin-bottom: 15px;">
-        <div class="row" style="justify-content: space-between; margin-bottom: 10px;">
-            <h3 style="margin: 0; color: var(--perigo-forte);">🚨 Condições Ativas na Mesa</h3>
-            ${isMaster ? `<button class="danger" onclick="masterClearAllConditions()">Limpar Todas as Condições</button>` : ''}
-        </div>
-        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px;">
-            ${afetados.map(c => {
-                const conds = Object.keys(c.activeConditions).map(condName => `
-                    <span class="pill" style="display: inline-flex; align-items: center; gap: 5px; background: var(--perigo); color: white; margin: 2px;">
-                        ${esc(condName)}
-                        ${isMaster ? `<button class="danger" style="padding: 0 4px; height: 18px; font-size: 10px; background: transparent; border: 1px solid white;" title="Remover do personagem" onclick="masterRemoveCondition('${c.id}', '${esc(condName)}')">×</button>` : ''}
-                    </span>
-                `).join('');
-                
-                return `<div style="background: var(--fundo-painel-claro); padding: 10px; border-radius: 8px; border: 1px solid var(--borda-clara);">
-                    <strong style="display: block; margin-bottom: 5px; color: var(--texto);">${esc(c.name)}</strong>
-                    <div>${conds}</div>
-                </div>`;
-            }).join('')}
+    let html = `<div class="conditions-modal-overlay" onclick="if(event.target === this) closeConditionsModal()">
+        <div class="conditions-modal-content">
+            <div class="row" style="justify-content: space-between; margin-bottom: 15px;">
+                <h3 style="margin: 0; color: var(--perigo-forte);">🚨 Condições Ativas na Mesa</h3>
+                <button class="secondary" onclick="closeConditionsModal()">Fechar</button>
+            </div>
+            ${isMaster ? `<div style="margin-bottom: 15px;"><button class="danger" onclick="masterClearAllConditions(); closeConditionsModal();">Limpar Todas as Condições</button></div>` : ''}
+            <div class="grid" style="grid-template-columns: 1fr; gap: 10px;">
+                ${afetados.map(c => {
+                    const conds = Object.keys(c.activeConditions).map(condName => `
+                        <span class="pill" style="display: inline-flex; align-items: center; gap: 5px; background: var(--perigo); color: white; margin: 2px;">
+                            ${esc(condName)}
+                            <button class="secondary" style="padding: 0 4px; height: 18px; font-size: 10px; background: transparent; border: 1px solid white; color: white;" title="Rolar teste de Resistência" onclick="rollConditionEscape('${c.id}', '${esc(condName)}')">🎲</button>
+                            ${isMaster ? `<button class="danger" style="padding: 0 4px; height: 18px; font-size: 10px; background: transparent; border: 1px solid white; color: white;" title="Remover" onclick="masterRemoveCondition('${c.id}', '${esc(condName)}'); openConditionsModal();">×</button>` : ''}
+                        </span>
+                    `).join('');
+                    
+                    return `<div style="background: var(--fundo-painel-claro); padding: 10px; border-radius: 8px; border: 1px solid var(--borda-clara);">
+                        <strong style="display: block; margin-bottom: 5px;">${esc(c.name)}</strong>
+                        <div>${conds}</div>
+                    </div>`;
+                }).join('')}
+            </div>
         </div>
     </div>`;
-    return html;
+    
+    // Remove modal antigo, se houver
+    const oldModal = document.getElementById('conditionsModal');
+    if (oldModal) oldModal.remove();
+    
+    const div = document.createElement('div');
+    div.id = 'conditionsModal';
+    div.innerHTML = html;
+    document.body.appendChild(div);
+}
+
+function closeConditionsModal() {
+    const modal = document.getElementById('conditionsModal');
+    if (modal) modal.remove();
 }
 function ensureCatalog(c) {
     if (!c.entries) c.entries = { vantagens: [], desvantagens: [], tecnicas: [] };
