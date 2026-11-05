@@ -745,7 +745,7 @@ function setCharPhoto(id, input) {
         URL.revokeObjectURL(previewUrl);
         if (!novaUrl) {
             c.photo = fotoAntiga;
-            if (statusEl) statusEl.textContent = 'Falha ao enviar imagem';
+            if (statusEl) statusEl.textContent = 'Falha ao enviar imagem — verifique o bucket "avatars" no Supabase';
             render();
             return;
         }
