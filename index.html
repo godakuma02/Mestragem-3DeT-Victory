@@ -1873,8 +1873,17 @@ const CONDICOES = [
 
 function toggleCondition(c, condName) {
     ensureCatalog(c);
-    c.activeConditions[condName] = !c.activeConditions[condName];
-    save(); render();
+    const isActivating = !c.activeConditions[condName];
+    c.activeConditions[condName] = isActivating;
+    
+    if (isActivating) {
+        logMessage(`⚠️ STATUS: ${c.name} agora está sob a condição "${condName}".`);
+    } else {
+        logMessage(`✅ STATUS: ${c.name} não está mais sob a condição "${condName}".`);
+    }
+    
+    save(); 
+    render();
 }
 
 function showConditionInfo(condName) {
