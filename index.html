@@ -1918,7 +1918,6 @@ function announceCondition(c, condName) {
 }
 
 function renderConditionsTab(c) {
-    window._currentConditionTarget = c;
     if (!c) return '';
     ensureCatalog(c);
     
@@ -1929,50 +1928,103 @@ function renderConditionsTab(c) {
                 const isChecked = c.activeConditions[cond.name] === true;
                 return `<div class="catalogrow" style="margin: 0 !important;">
                     <label class="skill-cost" title="Ativar/Desativar condição" style="white-space:nowrap;">
-                        <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCondition(window._currentConditionTarget, '${esc(cond.name)}')">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleConditionById('${c.id}', '${esc(cond.name)}', this.checked)">
                     </label>
                     <span style="font-weight: 600; font-size: 13px;">${esc(cond.name)}</span>
                     <button type="button" title="Ver regra completa" onclick="showConditionInfo('${esc(cond.name)}')">🔍</button>
-                    <button type="button" title="Enviar ao chat" onclick="announceCondition(currentCharacter(), '${esc(cond.name)}')">i</button>
+                    <button type="button" title="Enviar ao chat" onclick="announceConditionById('${c.id}', '${esc(cond.name)}')">i</button>
                 </div>`;
             }).join('')}
         </div>
     </div>`;
 }
 
-function masterClearAllConditions() {
-    if (!requireMaster()) return;
-    if (!confirm('Atenção: Isso removerá TODAS as condições ativas de TODOS os personagens da mesa. Continuar?')) return;
-    
+function toggleConditionById(id, condName, checked) {
     const mesa = current();
     if (!mesa) return;
     
+    // Busca no personagem principal
+    let target = mesa.characters.find(x => x.id === id);
+    
+    // Se não achou, procura dentro dos veículos de todos os personagens
+    if (!target) {
+        for (const p of mesa.characters) {
+            const v = (p.vehicles || []).find(x => x.id === id);
+            if (v) { target = v; break; }
+        }
+    }
+    
+    if (!target) return;
+    ensureCatalog(target);
+    
+    target.activeConditions[condName] = checked;
+    
+    if (checked) {
+        logMessage(`⚠️ STATUS: ${target.name} agora está sob a condição "${condName}".`);
+    } else {
+        logMessage(`✅ STATUS: ${target.name} não está mais sob a condição "${condName}".`);
+    }
+    
+    save();
+    render();
+}
+
+function announceConditionById(id, condName) {
+    const mesa = current();
+    if (!mesa) return;
+    let target = mesa.characters.find(x => x.id === id);
+    if (!target) {
+        for (const p of mesa.characters) {
+            const v = (p.vehicles || []).find(x => x.id === id);
+            if (v) { target = v; break; }
+        }
+    }
+    if (!target) return;
+    const cond = CONDICOES.find(c => c.name === condName);
+    if (!cond) return;
+    logMessage(`ℹ ${target.name} — Condição: ${cond.name}\n${cond.description}\nFonte: ${cond.source}`);
+}
+
+function masterClearAllConditions() {
+    if (!requireMaster()) return;
+    if (!confirm('Atenção: Isso removerá TODAS as condições ativas de TODOS os personagens e subfichas da mesa. Continuar?')) return;
+    
+    const mesa = current();
+    if (!mesa) return;
     let alterou = false;
+    
     mesa.characters.forEach(c => {
         if (c.activeConditions && Object.keys(c.activeConditions).length > 0) {
             c.activeConditions = {};
             alterou = true;
         }
+        (c.vehicles || []).forEach(v => {
+            if (v.activeConditions && Object.keys(v.activeConditions).length > 0) {
+                v.activeConditions = {};
+                alterou = true;
+            }
+        });
     });
     
-    if (alterou) {
-        save();
-        if (selectedChar) render(); 
-    }
+    if (alterou) { save(); render(); }
 }
 
-function masterRemoveCondition(charId, condName) {
+function masterRemoveCondition(charId, condName, vId = '') {
     if (!requireMaster()) return;
-    
     const mesa = current();
     if (!mesa) return;
-    const c = mesa.characters.find(x => x.id === charId);
-    if (!c || !c.activeConditions) return;
     
-    if (c.activeConditions[condName]) {
-        delete c.activeConditions[condName];
+    let target = mesa.characters.find(x => x.id === charId);
+    if (vId) {
+        const owner = mesa.characters.find(x => x.id === charId);
+        if (owner) target = (owner.vehicles || []).find(v => v.id === vId);
+    }
+    
+    if (!target || !target.activeConditions) return;
+    if (target.activeConditions[condName]) {
+        delete target.activeConditions[condName];
         save();
-        if (selectedChar === charId) render();
+        render();
     }
 }
 
@@ -1990,15 +2042,28 @@ function renderConditionsBadge() {
         🚨 ${totalConds} Condições Ativas
     </button>`;
 }
-    function openConditionsModal() {
+
+function openConditionsModal() {
     const mesa = current();
     if (!mesa) return;
-    
-    const afetados = mesa.characters.filter(c => c.activeConditions && Object.keys(c.activeConditions).length > 0);
+
+    // Monta lista de afetados (personagem principal + subfichas/veículos)
+    const afetados = [];
+    mesa.characters.forEach(c => {
+        if (c.activeConditions && Object.keys(c.activeConditions).length > 0) {
+            afetados.push({ nome: c.name, tipo: 'Personagem', charId: c.id, conds: c.activeConditions, isVehicle: false });
+        }
+        (c.vehicles || []).forEach(v => {
+            if (v.activeConditions && Object.keys(v.activeConditions).length > 0) {
+                afetados.push({ nome: v.name, tipo: 'Subficha', charId: c.id, vId: v.id, conds: v.activeConditions, isVehicle: true });
+            }
+        });
+    });
+
     if (afetados.length === 0) return;
 
     const isMaster = session?.role === 'mestre';
-    
+
     let html = `<div class="conditions-modal-overlay" onclick="if(event.target === this) closeConditionsModal()">
         <div class="conditions-modal-content">
             <div class="row" style="justify-content: space-between; margin-bottom: 15px;">
@@ -2007,28 +2072,25 @@ function renderConditionsBadge() {
             </div>
             ${isMaster ? `<div style="margin-bottom: 15px;"><button class="danger" onclick="masterClearAllConditions(); closeConditionsModal();">Limpar Todas as Condições</button></div>` : ''}
             <div class="grid" style="grid-template-columns: 1fr; gap: 10px;">
-                ${afetados.map(c => {
-                    const conds = Object.keys(c.activeConditions).map(condName => `
+                ${afetados.map(a => {
+                    const conds = Object.keys(a.conds).map(condName => `
                         <span class="pill" style="display: inline-flex; align-items: center; gap: 5px; background: var(--perigo); color: white; margin: 2px;">
                             ${esc(condName)}
-                            <button class="secondary" style="padding: 0 4px; height: 18px; font-size: 10px; background: transparent; border: 1px solid white; color: white;" title="Rolar teste de Resistência" onclick="rollConditionEscape('${c.id}', '${esc(condName)}')">🎲</button>
-                            ${isMaster ? `<button class="danger" style="padding: 0 4px; height: 18px; font-size: 10px; background: transparent; border: 1px solid white; color: white;" title="Remover" onclick="masterRemoveCondition('${c.id}', '${esc(condName)}'); openConditionsModal();">×</button>` : ''}
+                            ${isMaster ? `<button class="danger" style="padding: 0 4px; height: 18px; font-size: 10px; background: transparent; border: 1px solid white; color: white;" title="Remover" onclick="masterRemoveCondition('${a.charId}', '${esc(condName)}', '${a.vId || ''}'); openConditionsModal();">×</button>` : ''}
                         </span>
                     `).join('');
-                    
                     return `<div style="background: var(--fundo-painel-claro); padding: 10px; border-radius: 8px; border: 1px solid var(--borda-clara);">
-                        <strong style="display: block; margin-bottom: 5px;">${esc(c.name)}</strong>
+                        <strong style="display: block; margin-bottom: 5px;">${esc(a.nome)} <span class="muted" style="font-size: 11px;">(${a.tipo})</span></strong>
                         <div>${conds}</div>
                     </div>`;
                 }).join('')}
             </div>
         </div>
     </div>`;
-    
-    // Remove modal antigo, se houver
+
     const oldModal = document.getElementById('conditionsModal');
     if (oldModal) oldModal.remove();
-    
+
     const div = document.createElement('div');
     div.id = 'conditionsModal';
     div.innerHTML = html;
