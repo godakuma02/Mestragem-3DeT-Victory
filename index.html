@@ -3086,6 +3086,16 @@ function renderApp() {
         out.innerHTML = `<div class="card"><h3>Notas da Campanha</h3><textarea style="min-height:330px" oninput="current().notes=this.value;save()">${esc(t.notes)}</textarea></div>`;
     }
 }
+    // Renderiza a badge flutuante de condições
+    const existingBadge = document.getElementById('conditionsBadgeFloat');
+    if (existingBadge) existingBadge.remove();
+    const badgeHtml = renderConditionsBadge();
+    if (badgeHtml) {
+        const badgeDiv = document.createElement('div');
+        badgeDiv.id = 'conditionsBadgeFloat';
+        badgeDiv.innerHTML = badgeHtml;
+        document.body.appendChild(badgeDiv);
+    }
 
 function render() { renderApp(); }
 const currentCharacter = () => current()?.characters.find(x => x.id === selectedChar);
