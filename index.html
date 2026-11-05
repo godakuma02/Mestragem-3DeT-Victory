@@ -528,6 +528,7 @@ function freshChar(name = 'Novo personagem', npc = false) {
         meals: { basica: [], gourmet: [], chef: [] },
         artifacts: { armas: [], armaduras: [], acessorios: [] },
         vehicles: [],
+        activeConditions: {},
         inventoryItems: { comum: [], incomum: [], raro: [] }
     };
 }
@@ -1838,7 +1839,77 @@ const CHARACTER_KITS = [
         page: 63
     }
 ];
+// --- CONDIÇÕES DE STATUS ---
+const CONDICOES = [
+    { name: 'Agarrado / Imobilizado / Preso', description: 'Não pode realizar ações ou movimentos (exceto tentar se soltar). Para se libertar, gasta uma ação e vence um teste de Poder resistido. O atacante que agarra só pode realizar uma ação OU um movimento.', source: 'Manual (Manobra de Agarrão); Ferozes (Asfixor, Gashadokuro); Masmorras (Rastejante de Pedra, Mímico, Mycelas).' },
+    { name: 'Atordoado', description: 'Não pode realizar uma ação no próximo turno, apenas um movimento.', source: 'Manual (Golpe Atordoante, Relâmpago); Ferozes (Hacker Serafim.exe, Boitatá, Kaiju Mecânico, Saci); Masmorras (Assombração Aterrorizante).' },
+    { name: 'Cego / Ofuscado', description: 'Sofre Perda em todos os testes que dependem da visão (atacar, defender, perceber).', source: 'Manual (Grimório Debilitante, Barreira Mística); Ferozes (Anjo Terminal, Baú Mímico, Bexigas da Vingança, Drelion, Tucanídeo); Masmorras (Engloidor de Luz, Olho do Julgamento, Magia Caótica).' },
+    { name: 'Confuso', description: 'Não consegue escolher os alvos de suas perícias/vantagens (incluindo a si mesmo). O mestre escolhe os alvos ao acaso. Dura até o fim da cena ou até sofrer dano (com teste de R para cancelar).', source: 'Manual (Vantagem Confusão); Ferozes (Monge de Ferro); Masmorras (Magia Caótica).' },
+    { name: 'Contaminado / Doente', description: 'Sofre dano contínuo (ex: 1D por turno) ou Perda em testes até ser curado (Medicina ou Mística).', source: 'Manual (Desvantagem Dependência, Regra de Privações); Ferozes (Kaiju Poluente, Mycelas); Masmorras (Mycelas - Nuvem Tóxica).' },
+    { name: 'Dano Contínuo / Sangramento / Queimadura', description: 'Sofre o mesmo dano novamente na rodada seguinte, a menos que gaste uma ação para estancar/limpar.', source: 'Manual (Vantagem Desgaste); Ferozes (Boitatá das Brasas, Bisontes de Fogo); Masmorras (Gula do Inferno).' },
+    { name: 'Derrubado / Caído', description: 'Sofre Perda em todos os testes até usar um movimento para se levantar.', source: 'Manual (Golpe Derrubar, Pisão do Titã); Ferozes (Kobold Bruto, Mechabuki, Saci, Terrópode, Kaiju Sauroide); Masmorras (Corsário do Riso, Rompedor dos Céus).' },
+    { name: 'Descontrole Selvagem', description: 'Só pode atacar (Ganho em ataque), sempre ataca o mais próximo (aliado ou inimigo), sofre Perda em todos os testes de defesa.', source: 'Masmorras e Marmitas (Regra de Empanturrado).' },
+    { name: 'Enfraquecido / Debilitado', description: 'Um atributo é reduzido em –1 ou –2 até o fim da cena/combate. Afeta testes e recursos (PV, PM, PA). Se chegar a 0, o atributo fica nulo.', source: 'Manual (Barreira Mística, Grimório Debilitante, Dim Mak); Ferozes (Guardião da Roda - Decadência); Masmorras (Golpe Debilitante).' },
+    { name: 'Enjoado', description: 'Perda em todos os testes até ser curado (Medicina ou teste de Resistência).', source: 'Masmorras e Marmitas (Mycelas - Esporos e Nuvem Tóxica).' },
+    { name: 'Envenenado', description: 'Sofre dano contínuo (geralmente metade do dano inicial na rodada seguinte) ou Perda em testes. Pode exigir teste de Resistência para evitar/curar.', source: 'Manual (Desgaste, Raio Místico); Ferozes (Sapatroz, Basilisco); Masmorras (Mycelas).' },
+    { name: 'Exausto', description: 'PM caem a zero e sofre Perda em todos os testes até descansar.', source: 'Manual (Técnica Queimar o Cosmo, Fúria); Masmorras (Fúria do Titã).' },
+    { name: 'Imundo', description: 'Gasta o dobro de movimentos para mudar de distância.', source: 'Masmorras e Marmitas (Armadilha "Você precisa de um banho").' },
+    { name: 'Indefeso', description: 'Não pode rolar defesa, usando apenas a Resistência base. Ocorre quando paralisado, inconsciente ou incapacitado.', source: 'Manual (Regra de Combate).' },
+    { name: 'Lento', description: 'Gasta o dobro de movimentos para mudar de distância (ex: 2 movimentos para Perto/Longe). Sofre Perda em Iniciativa.', source: 'Manual (Desvantagem Lento); Ferozes (Golem de Guerra, Kaiju Poluente); Masmorras (Holle - Aura de Frio, Guardião da Roda - Perdição).' },
+    { name: 'Marcado', description: 'Sofre Perda na defesa contra ataques de aliados da facção que o marcou.', source: 'Ferozes e Furiosos (Lanterna Âmbar).' },
+    { name: 'Paralisado', description: 'Fica imobilizado e indefeso. Dura até o fim da cena ou até sofrer dano. Pode tentar teste de R para cancelar a cada turno.', source: 'Manual (Vantagem Paralisia); Ferozes (Lacaio da Vigília, Oficial Necronstruto, Bruxa Fatal); Masmorras (Mímico, Holle).' },
+    { name: 'Perda (Condição Geral)', description: 'Rola um dado a menos (mínimo 1D) em todos os testes afetados. Cancelada por um Ganho.', source: 'Regra Base (Manual, Ferozes, Masmorras).' },
+    { name: 'Possuído / Controlado', description: 'Perde o controle da própria ficha. O mestre ou outra entidade controla suas ações. Pode ser evitado com teste de Resistência.', source: 'Manual (Contrato Demoníaco); Ferozes (Zashiki Warashi, Unagi); Masmorras (Possuído, Possessão).' },
+    { name: 'Privações', description: 'Testes de Resistência com metas crescentes. Falhar causa desde Perda em testes até redução de Resistência, derrota ou morte.', source: 'Manual (Regra de Privações).' },
+    { name: 'Selado', description: 'Impedido de recuperar PV até o fim da cena ou morte.', source: 'Ferozes e Furiosos (Mechabuki - Ato Final).' },
+    { name: 'Sobrecarga (Glitch)', description: 'Todos os personagens rolam falhas críticas com 1 ou 2.', source: 'Ferozes e Furiosos (Glitch Andante).' },
+    { name: 'Sobrecarregado', description: 'Exceder o limite de carga causa Perda em todos os testes que envolvem movimento.', source: 'Masmorras e Marmitas (Gerenciamento de Carga).' },
+    { name: 'Sono / Inconsciente', description: 'Dorme profundamente ou cai inconsciente. Fica indefeso.', source: 'Manual (Teste de Morte); Ferozes (Sonoletas); Masmorras (Sonoletas).' },
+    { name: 'Travado (Lag)', description: 'Fica paralisado (como a vantagem Paralisia).', source: 'Ferozes e Furiosos (Mortos-Fixos).' },
+    { name: 'Vulnerável', description: 'Sofre dano dobrado de um tipo específico (ex: Fogo, Água, Frio).', source: 'Manual (Desvantagem Vulnerável); Ferozes (Bruxa Fatal, Metaliano); Masmorras (Gula do Inferno - Itens avariados).' },
+    { name: 'Dado do Medo', description: 'Penalidade em testes que aumenta conforme eventos (1 a 6). Se chegar a 6 e sofrer aumento, todos são derrotados.', source: 'Regras Opcionais.' },
+    { name: 'Dado do Estresse', description: 'Aumenta o custo em PM de vantagens/técnicas, mas concede bônus em testes.', source: 'Regras Opcionais.' }
+];
 
+function toggleCondition(c, condName) {
+    ensureCatalog(c);
+    c.activeConditions[condName] = !c.activeConditions[condName];
+    save(); render();
+}
+
+function showConditionInfo(condName) {
+    const cond = CONDICOES.find(c => c.name === condName);
+    if (!cond) return;
+    alert(`${cond.name}\n\n${cond.description}\n\nFonte: ${cond.source}`);
+}
+
+function announceCondition(c, condName) {
+    const cond = CONDICOES.find(c => c.name === condName);
+    if (!cond) return;
+    logMessage(`ℹ ${c.name} — Condição: ${cond.name}\n${cond.description}\nFonte: ${cond.source}`);
+}
+
+function renderConditionsTab(c) {
+    if (!c) return '';
+    ensureCatalog(c);
+    
+    return `<div class="card"><h3>⚔️ Condições e Status</h3>
+        <p class="muted">Marque as condições ativas. Clique na lupa para ver as regras ou no "i" para enviar ao chat.</p>
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 10px;">
+            ${CONDICOES.map(cond => {
+                const isChecked = c.activeConditions[cond.name] === true;
+                return `<div class="catalogrow" style="margin: 0 !important;">
+                    <label class="skill-cost" title="Ativar/Desativar condição" style="white-space:nowrap;">
+                        <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCondition(currentCharacter(), '${esc(cond.name)}')">
+                    </label>
+                    <span style="font-weight: 600; font-size: 13px;">${esc(cond.name)}</span>
+                    <button type="button" title="Ver regra completa" onclick="showConditionInfo('${esc(cond.name)}')">🔍</button>
+                    <button type="button" title="Enviar ao chat" onclick="announceCondition(currentCharacter(), '${esc(cond.name)}')">i</button>
+                </div>`;
+            }).join('')}
+        </div>
+    </div>`;
+}
 function ensureCatalog(c) {
     if (!c.entries) c.entries = { vantagens: [], desvantagens: [], tecnicas: [] };
     if (!c.kits) c.kits = [];
@@ -1872,6 +1943,7 @@ function ensureCatalog(c) {
         }
         if (!Array.isArray(c.inventoryItems[r])) c.inventoryItems[r] = [];
     }
+    if (!c.activeConditions) c.activeConditions = {};
     return c.entries;
 }
 
@@ -2335,7 +2407,8 @@ function renderVehicleSheet() {
     else if (activeSheetTab === 'tecnicas') { sub = renderTechniquesTab(v); }
     else if (activeSheetTab === 'refeicoes') { sub = renderMealsTab(v); }
     else if (activeSheetTab === 'artefatos') { sub = renderArtifactsTab(v); }
-    const tabs = [['principal','Ficha Principal'],['pericias','Perícias'],['vantagens','Vantagens e Desvantagens'],['kits','Kits'],['inventario','Inventário'],['tecnicas','Técnicas'],['refeicoes','Refeições'],['artefatos','Artefatos']];
+    else if (activeSheetTab === 'condicoes') { sub = renderConditionsTab(v); }
+    const tabs = [['principal','Ficha Principal'],['pericias','Perícias'],['vantagens','Vantagens e Desvantagens'],['kits','Kits'],['inventario','Inventário'],['tecnicas','Técnicas'],['refeicoes','Refeições'],['artefatos','Artefatos'],['condicoes','Condições']];
     const t = current();
     document.getElementById('content').innerHTML = `
         <div class="toolbar" style="margin-bottom:15px"><button class="secondary" onclick="closeVehicle()">← Voltar para o personagem</button><span class="pill">Veículo: ${esc(v.name)}</span></div>
@@ -2738,7 +2811,7 @@ function renderApp() {
         }
         selectedChar = c.id;
 
-        let sheetTabs = [['principal', 'Ficha Principal'], ['pericias', 'Perícias'], ['vantagens', 'Vantagens e Desvantagens'], ['kits', 'Kits de Personagem'], ['inventario', 'Inventário'], ['tecnicas', 'Técnicas'], ['refeicoes', 'Refeições'], ['artefatos', 'Artefatos'], ['veiculos', 'Subfichas']];
+        let sheetTabs = [['principal', 'Ficha Principal'], ['pericias', 'Perícias'], ['vantagens', 'Vantagens e Desvantagens'], ['kits', 'Kits de Personagem'], ['inventario', 'Inven        let sheetTabs = [['principal', 'Ficha Principal'], ['pericias', 'Perícias'], ['vantagens', 'Vantagens e Desvantagens'], ['kits', 'Kits de Personagem'], ['inventario', 'Inventário'], ['tecnicas', 'Técnicas'], ['refeicoes', 'Refeições'], ['artefatos', 'Artefatos'], ['condicoes', 'Condições'], ['veiculos', 'Subfichas']];tário'], ['tecnicas', 'Técnicas'], ['refeicoes', 'Refeições'], ['artefatos', 'Artefatos'], ['veiculos', 'Subfichas']];
 
         let subContent = '';
         if (activeSheetTab === 'principal') {
@@ -2772,6 +2845,8 @@ function renderApp() {
             subContent = renderMealsTab(c);
         } else if (activeSheetTab === 'artefatos') {
             subContent = renderArtifactsTab(c);
+        } else if (activeSheetTab === 'condicoes') {
+            subContent = renderConditionsTab(c);
         } else if (activeSheetTab === 'veiculos') {
             subContent = renderVehiclesTab(c);
         }
