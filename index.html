@@ -234,11 +234,7 @@ const uid = () => crypto.randomUUID ? crypto.randomUUID() : Date.now() + '_' + M
 // ============================================================
 const SUPABASE_URL = 'https://krjavqfgivkexffgejfs.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_OBsQNeA87H2ozbc-5vH-Jw_3FFYUugp';
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-    global: {
-        headers: { 'apikey': SUPABASE_KEY }
-    }
-});
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const AVATAR_BUCKET = 'avatars';
 
 // ============================================================
