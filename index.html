@@ -727,7 +727,7 @@ async function uploadAvatar(file) {
     try {
         const blob = await comprimirImagem(file);
         if (!blob) return null;
-        const pasta = session?.personagemId || session?.name || 'anon';
+        const pasta = String(session?.personagemId || session?.name || 'anon').replace(/[^a-zA-Z0-9_-]/g, '_');
         const nomeArq = `${pasta}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.jpg`;
         const { data, error } = await supabaseClient.storage
             .from(AVATAR_BUCKET)
@@ -751,39 +751,62 @@ async function apagarAvatarAntigo(url) {
     } catch (_) {}
 }
 
+let _previewFotoAtual = { alvoId: null, url: null };
 function setCharPhoto(id, input) {
-    const c = current()?.characters.find(x => x.id === id) || currentVehicle();
+    let c = current()?.characters.find(x => x.id === id);
+    if (!c) {
+        const v = currentVehicle();
+        if (v && v.id === id) c = v;
+    }
     if (!c) return;
     const file = input.files[0]; if (!file) return;
     const statusEl = document.getElementById('status');
     if (statusEl) statusEl.textContent = 'Enviando imagem…';
     const fotoAntiga = c.photo || '';
-    // Pré-visualização instantânea (sem ir ao banco)
+    // Preview em variável separada — não sobrescreve c.photo (evita estado blob: persistente)
+    if (_previewFotoAtual.url) URL.revokeObjectURL(_previewFotoAtual.url);
     const previewUrl = URL.createObjectURL(file);
-    c.photo = previewUrl; render();
+    _previewFotoAtual = { alvoId: id, url: previewUrl };
+    render();
     uploadAvatar(file).then(async (novaUrl) => {
-        URL.revokeObjectURL(previewUrl);
         if (!novaUrl) {
-            c.photo = fotoAntiga;
+            URL.revokeObjectURL(previewUrl);
+            _previewFotoAtual = { alvoId: null, url: null };
             if (statusEl) statusEl.textContent = 'Falha ao enviar imagem — verifique o bucket "avatars" no Supabase';
             render();
             return;
         }
+        URL.revokeObjectURL(previewUrl);
+        _previewFotoAtual = { alvoId: null, url: null };
         c.photo = novaUrl;
         save();
         render();
-        if (fotoAntiga && fotoAntiga !== novaUrl) await apagarAvatarAntigo(fotoAntiga);
+        if (fotoAntiga && fotoAntiga !== novaUrl && !fotoAntiga.startsWith('blob:')) await apagarAvatarAntigo(fotoAntiga);
         if (statusEl) statusEl.textContent = 'Foto atualizada • ' + new Date().toLocaleTimeString('pt-BR');
     });
     input.value = '';
 }
 
 function clearCharPhoto(id) {
-    const c = current()?.characters.find(x => x.id === id) || currentVehicle();
+    let c = current()?.characters.find(x => x.id === id);
+    if (!c) {
+        const v = currentVehicle();
+        if (v && v.id === id) c = v;
+    }
     if (!c) return;
+    if (_previewFotoAtual.url && _previewFotoAtual.alvoId === id) {
+        URL.revokeObjectURL(_previewFotoAtual.url);
+        _previewFotoAtual = { alvoId: null, url: null };
+    }
     const antiga = c.photo || '';
-    c.photo = ''; save(); render();
-    if (antiga) apagarAvatarAntigo(antiga);
+    c.photo = '';
+    // Atualiza o cache de diff para que _salvarTudo não reverte no próximo save
+    if (typeof _ultimoEstadoSalvo !== 'undefined' && _ultimoEstadoSalvo.has(id)) {
+        const estado = _ultimoEstadoSalvo.get(id);
+        if (estado && estado.ficha) estado.ficha.photo = '';
+    }
+    save(); render();
+    if (antiga && !antiga.startsWith('blob:')) apagarAvatarAntigo(antiga);
 }
 
 function maxResource(c, key) { return Math.max(1, (key === 'pa' ? c.p : key === 'pm' ? c.h : c.r) * (key === 'pa' ? 1 : 5)); }
@@ -1892,13 +1915,12 @@ const CONDICOES = [
 
 function toggleCondition(c, condName) {
     ensureCatalog(c);
-    const isActivating = !c.activeConditions[condName];
-    c.activeConditions[condName] = isActivating;
-    
-    if (isActivating) {
-        logMessage(`⚠️ STATUS: ${c.name} agora está sob a condição "${condName}".`);
-    } else {
+    if (c.activeConditions[condName]) {
+        delete c.activeConditions[condName];
         logMessage(`✅ STATUS: ${c.name} não está mais sob a condição "${condName}".`);
+    } else {
+        c.activeConditions[condName] = true;
+        logMessage(`⚠️ STATUS: ${c.name} agora está sob a condição "${condName}".`);
     }
     
     save(); 
@@ -1957,11 +1979,11 @@ function toggleConditionById(id, condName, checked) {
     if (!target) return;
     ensureCatalog(target);
     
-    target.activeConditions[condName] = checked;
-    
     if (checked) {
+        target.activeConditions[condName] = true;
         logMessage(`⚠️ STATUS: ${target.name} agora está sob a condição "${condName}".`);
     } else {
+        delete target.activeConditions[condName];
         logMessage(`✅ STATUS: ${target.name} não está mais sob a condição "${condName}".`);
     }
     
@@ -2031,12 +2053,15 @@ function masterRemoveCondition(charId, condName, vId = '') {
 function renderConditionsBadge() {
     const mesa = current();
     if (!mesa) return '';
-    
-    const afetados = mesa.characters.filter(c => c.activeConditions && Object.keys(c.activeConditions).length > 0);
-    if (afetados.length === 0) return '';
 
     let totalConds = 0;
-    afetados.forEach(c => totalConds += Object.keys(c.activeConditions).length);
+    mesa.characters.forEach(c => {
+        if (c.activeConditions) totalConds += Object.keys(c.activeConditions).length;
+        (c.vehicles || []).forEach(v => {
+            if (v.activeConditions) totalConds += Object.keys(v.activeConditions).length;
+        });
+    });
+    if (totalConds === 0) return '';
 
     return `<button class="conditions-badge-btn" onclick="openConditionsModal()" title="Ver condições ativas na mesa">
         🚨 ${totalConds} Condições Ativas
@@ -2050,17 +2075,19 @@ function openConditionsModal() {
     // Monta lista de afetados (personagem principal + subfichas/veículos)
     const afetados = [];
     mesa.characters.forEach(c => {
-        if (c.activeConditions && Object.keys(c.activeConditions).length > 0) {
-            afetados.push({ nome: c.name, tipo: 'Personagem', charId: c.id, conds: c.activeConditions, isVehicle: false });
+        const condsAtivas = Object.fromEntries(Object.entries(c.activeConditions || {}).filter(([, v]) => v === true));
+        if (Object.keys(condsAtivas).length > 0) {
+            afetados.push({ nome: c.name, tipo: 'Personagem', charId: c.id, conds: condsAtivas, isVehicle: false });
         }
         (c.vehicles || []).forEach(v => {
-            if (v.activeConditions && Object.keys(v.activeConditions).length > 0) {
-                afetados.push({ nome: v.name, tipo: 'Subficha', charId: c.id, vId: v.id, conds: v.activeConditions, isVehicle: true });
+            const vConds = Object.fromEntries(Object.entries(v.activeConditions || {}).filter(([, val]) => val === true));
+            if (Object.keys(vConds).length > 0) {
+                afetados.push({ nome: v.name, tipo: 'Subficha', charId: c.id, vId: v.id, conds: vConds, isVehicle: true });
             }
         });
     });
 
-    if (afetados.length === 0) return;
+    if (afetados.length === 0) { closeConditionsModal(); return; }
 
     const isMaster = session?.role === 'mestre';
 
@@ -2579,7 +2606,7 @@ function renderVehicleSheet() {
             ${pointsPanel(v)}
             <div class="card"><h3>Identificação</h3>
                 <div class="photo-wrap">
-                    <img class="photo-circle" id="charPhoto" src="${v.photo ? esc(v.photo) : ''}" alt="Foto do veículo">
+                    <img class="photo-circle" id="charPhoto" src="${(_previewFotoAtual.alvoId === v.id && _previewFotoAtual.url) ? esc(_previewFotoAtual.url) : (v.photo ? esc(v.photo) : 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==')}" alt="Foto do veículo">
                     <div>
                         <label class="mini">Foto do veículo</label><br>
                         <input type="file" accept="image/*" onchange="setCharPhoto('${v.id}', this)">
@@ -2634,6 +2661,7 @@ function renderVehicleSheet() {
                 </div>
             </div>
         </div>`;
+    renderConditionsBadgeFloat();
     document.getElementById('mainContainer').classList.add('ficha-fullscreen');
     ['topHeader','mainToolbar','mainSessionRow','summary','tabs','mainFooter'].forEach(id => document.getElementById(id).style.display = 'none');
 }
@@ -3009,7 +3037,7 @@ function renderApp() {
                 ${pointsPanel(c)}
                 <div class="card"><h3>Identificação</h3>
                     <div class="photo-wrap">
-                        <img class="photo-circle" id="charPhoto" src="${c.photo ? esc(c.photo) : ''}" alt="Foto do personagem">
+                        <img class="photo-circle" id="charPhoto" src="${(_previewFotoAtual.alvoId === c.id && _previewFotoAtual.url) ? esc(_previewFotoAtual.url) : (c.photo ? esc(c.photo) : 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==')}" alt="Foto do personagem">
                         <div>
                             <label class="mini">Foto do personagem</label><br>
                             <input type="file" accept="image/*" onchange="setCharPhoto('${c.id}', this)">
@@ -3079,6 +3107,7 @@ function renderApp() {
                     </div>
                 </div>
             </div>`;
+        renderConditionsBadgeFloat();
         return;
     }
 
@@ -3087,6 +3116,10 @@ if (tab === 'anotacoes') {
     }
 
     // Renderiza a badge flutuante de condições
+    renderConditionsBadgeFloat();
+}
+
+function renderConditionsBadgeFloat() {
     const existingBadge = document.getElementById('conditionsBadgeFloat');
     if (existingBadge) existingBadge.remove();
     const badgeHtml = renderConditionsBadge();
