@@ -149,11 +149,10 @@
         gap: 15px;
         width: 100%;
     }
-    .ficha-conteudo > .card { order: 0; }
+    .ficha-conteudo > * { order: 0; }
     .ficha-conteudo > .card.teste-rolagens-card { order: 1; }
     .ficha-conteudo > .card.chat-card { order: 2; }
     .ficha-conteudo > .card.notas-card { order: 3; }
-    .ficha-conteudo > *:not(.card) { order: 10; }
     .conditions-modal-overlay {
         position: fixed; top: 0; left: 0; width: 100%; height: 100%;
         background: rgba(0,0,0,0.6); z-index: 10000;
@@ -584,7 +583,7 @@ async function carregarChat(mesaPin) {
 function freshChar(name = 'Novo personagem', npc = false) {
     return {
         id: uid(), name, player: '', npc, scale: 'Ningen', p: 0, h: 0, r: 0, photo: '',
-        pa: null, pm: null, pv: null, pmExtra: 0, pvExtra: 0, skills: [], skillCosts: {}, specializations: [], specializationCosts: {}, kits: [],
+        pa: null, pm: null, pv: null, paExtra: 0, pmExtra: 0, pvExtra: 0, skills: [], skillCosts: {}, specializations: [], specializationCosts: {}, kits: [],
         entries: { vantagens: [], desvantagens: [], tecnicas: [] },
         inventory: '', notes: '', xp: 0, startPoints: 10,
         techniques: [],
@@ -854,7 +853,7 @@ function clearCharPhoto(id) {
 }
 
 function maxResource(c, key) {
-    if (key === 'pa') return Math.max(1, Number(c.p) || 0);
+    if (key === 'pa') return Math.max(1, (Number(c.p) || 0) + (Number(c.paExtra) || 0));
     const base = (key === 'pm' ? Number(c.h) || 0 : Number(c.r) || 0) * 5;
     const extra = key === 'pm' ? (Number(c.pmExtra) || 0) : (Number(c.pvExtra) || 0);
     return Math.max(1, base + extra);
@@ -874,7 +873,7 @@ function setResourceExtra(id, key, value) {
     if (!c) return;
     c[key] = Math.max(0, Number(value) || 0);
     // Se o recurso atual ficaria acima do novo máximo, ajusta
-    const resourceKey = key === 'pmExtra' ? 'pm' : 'pvExtra' === key ? 'pv' : null;
+    const resourceKey = key === 'paExtra' ? 'pa' : key === 'pmExtra' ? 'pm' : key === 'pvExtra' ? 'pv' : null;
     if (resourceKey) {
         const max = maxResource(c, resourceKey);
         if (valueResource(c, resourceKey) > max) c[resourceKey] = max;
@@ -995,7 +994,7 @@ function field(c, key, label, type = 'text') {
 }
 function area(c, key, label) { return `<div class="field"><label>${label}</label><textarea onchange="update('${c.id}','${key}',this.value)">${esc(c[key])}</textarea></div>`; }
 function resource(c, key, label) {
-    const extraKey = key === 'pm' ? 'pmExtra' : key === 'pv' ? 'pvExtra' : null;
+    const extraKey = key === 'pa' ? 'paExtra' : key === 'pm' ? 'pmExtra' : key === 'pv' ? 'pvExtra' : null;
     const extraField = extraKey ? `<div style="margin-top:10px;border-top:1px solid var(--borda-clara);padding-top:8px;"><label class="mini" style="display:block;margin-bottom:4px;">${key.toUpperCase()} Extra</label><input type="number" min="0" style="text-align:center;" value="${Number(c[extraKey]) || 0}" onchange="setResourceExtra('${c.id}','${extraKey}',this.value)"></div>` : '';
     return `<div class="card" style="min-width:140px;text-align:center"><h3>${label}</h3><strong>${valueResource(c, key)} / ${maxResource(c, key)}</strong><div class="counter" style="justify-content:center;margin-top:10px"><button onclick="adjust('${c.id}','${key}',-1)">−</button><input type="number" value="${valueResource(c, key)}" onchange="setResource('${c.id}','${key}',this.value)"><button onclick="adjust('${c.id}','${key}',1)">+</button></div>${extraField}</div>`;
 }
@@ -2237,6 +2236,7 @@ function ensureCatalog(c) {
         if (!Array.isArray(c.inventoryItems[r])) c.inventoryItems[r] = [];
     }
     if (!c.activeConditions) c.activeConditions = {};
+    if (c.paExtra === undefined || c.paExtra === null) c.paExtra = 0;
     if (c.pmExtra === undefined || c.pmExtra === null) c.pmExtra = 0;
     if (c.pvExtra === undefined || c.pvExtra === null) c.pvExtra = 0;
     return c.entries;
