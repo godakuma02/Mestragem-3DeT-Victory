@@ -584,7 +584,7 @@ async function carregarChat(mesaPin) {
 function freshChar(name = 'Novo personagem', npc = false) {
     return {
         id: uid(), name, player: '', npc, scale: 'Ningen', p: 0, h: 0, r: 0, photo: '',
-        pa: null, pm: null, pv: null, skills: [], skillCosts: {}, specializations: [], specializationCosts: {}, kits: [],
+        pa: null, pm: null, pv: null, pmExtra: 0, pvExtra: 0, skills: [], skillCosts: {}, specializations: [], specializationCosts: {}, kits: [],
         entries: { vantagens: [], desvantagens: [], tecnicas: [] },
         inventory: '', notes: '', xp: 0, startPoints: 10,
         techniques: [],
@@ -853,7 +853,12 @@ function clearCharPhoto(id) {
     if (antiga && !antiga.startsWith('blob:')) apagarAvatarAntigo(antiga);
 }
 
-function maxResource(c, key) { return Math.max(1, (key === 'pa' ? c.p : key === 'pm' ? c.h : c.r) * (key === 'pa' ? 1 : 5)); }
+function maxResource(c, key) {
+    if (key === 'pa') return Math.max(1, Number(c.p) || 0);
+    const base = (key === 'pm' ? Number(c.h) || 0 : Number(c.r) || 0) * 5;
+    const extra = key === 'pm' ? (Number(c.pmExtra) || 0) : (Number(c.pvExtra) || 0);
+    return Math.max(1, base + extra);
+}
 function valueResource(c, key) { return c[key] === null || c[key] === undefined ? maxResource(c, key) : c[key]; }
 
 function adjust(id, key, delta) {
@@ -861,6 +866,19 @@ function adjust(id, key, delta) {
     if (!c && currentVehicle()?.id === id) c = currentVehicle();
     if (!c) return;
     c[key] = Math.max(0, Math.min(maxResource(c, key), valueResource(c, key) + delta));
+    save(); render();
+}
+function setResourceExtra(id, key, value) {
+    let c = current()?.characters.find(x => x.id === id);
+    if (!c && currentVehicle()?.id === id) c = currentVehicle();
+    if (!c) return;
+    c[key] = Math.max(0, Number(value) || 0);
+    // Se o recurso atual ficaria acima do novo máximo, ajusta
+    const resourceKey = key === 'pmExtra' ? 'pm' : 'pvExtra' === key ? 'pv' : null;
+    if (resourceKey) {
+        const max = maxResource(c, resourceKey);
+        if (valueResource(c, resourceKey) > max) c[resourceKey] = max;
+    }
     save(); render();
 }
 
@@ -976,7 +994,11 @@ function field(c, key, label, type = 'text') {
     return `<div class="field"><label>${label}</label><input type="${type}" value="${esc(value)}" onchange="update('${c.id}','${key}',this.value)"></div>`;
 }
 function area(c, key, label) { return `<div class="field"><label>${label}</label><textarea onchange="update('${c.id}','${key}',this.value)">${esc(c[key])}</textarea></div>`; }
-function resource(c, key, label) { return `<div class="card" style="min-width:140px;text-align:center"><h3>${label}</h3><strong>${valueResource(c, key)} / ${maxResource(c, key)}</strong><div class="counter" style="justify-content:center;margin-top:10px"><button onclick="adjust('${c.id}','${key}',-1)">−</button><input type="number" value="${valueResource(c, key)}" onchange="setResource('${c.id}','${key}',this.value)"><button onclick="adjust('${c.id}','${key}',1)">+</button></div></div>`; }
+function resource(c, key, label) {
+    const extraKey = key === 'pm' ? 'pmExtra' : key === 'pv' ? 'pvExtra' : null;
+    const extraField = extraKey ? `<div style="margin-top:10px;border-top:1px solid var(--borda-clara);padding-top:8px;"><label class="mini" style="display:block;margin-bottom:4px;">${key.toUpperCase()} Extra</label><input type="number" min="0" style="text-align:center;" value="${Number(c[extraKey]) || 0}" onchange="setResourceExtra('${c.id}','${extraKey}',this.value)"></div>` : '';
+    return `<div class="card" style="min-width:140px;text-align:center"><h3>${label}</h3><strong>${valueResource(c, key)} / ${maxResource(c, key)}</strong><div class="counter" style="justify-content:center;margin-top:10px"><button onclick="adjust('${c.id}','${key}',-1)">−</button><input type="number" value="${valueResource(c, key)}" onchange="setResource('${c.id}','${key}',this.value)"><button onclick="adjust('${c.id}','${key}',1)">+</button></div>${extraField}</div>`;
+}
 
 // --- CATÁLOGOS E DADOS ---
 const CATALOG = {
@@ -2215,6 +2237,8 @@ function ensureCatalog(c) {
         if (!Array.isArray(c.inventoryItems[r])) c.inventoryItems[r] = [];
     }
     if (!c.activeConditions) c.activeConditions = {};
+    if (c.pmExtra === undefined || c.pmExtra === null) c.pmExtra = 0;
+    if (c.pvExtra === undefined || c.pvExtra === null) c.pvExtra = 0;
     return c.entries;
 }
 
@@ -2668,8 +2692,8 @@ function renderVehicleSheet() {
                 </div>
                 <div class="grid">${field(v, 'name', 'Nome')}${field(v, 'player', 'Jogador')}${field(v, 'scale', 'Escala')}${field(v, 'xp', 'XP', 'number')}</div></div>
             <div class="card"><h3>Atributos</h3><div class="grid">${field(v, 'p', 'Poder (P)', 'number')}${field(v, 'h', 'Habilidade (H)', 'number')}${field(v, 'r', 'Resistência (R)', 'number')}</div></div>
-            ${archetypePanel(v)}
             <div class="cards">${resource(v, 'pa', 'Pontos de Ação (PA)')}${resource(v, 'pm', 'Pontos de Mana (PM)')}${resource(v, 'pv', 'Pontos de Vida (PV)')}</div>
+            ${archetypePanel(v)}
             <div class="card">${area(v, 'notes', 'Anotações')}</div>`;
     } else if (activeSheetTab === 'pericias') { sub = renderSkills(v); }
     else if (activeSheetTab === 'vantagens') { sub = `<div class="cards" style="flex-direction:column">${catalogSection(v, 'vantagens')}${catalogSection(v, 'desvantagens')}</div>`; }
@@ -3377,8 +3401,8 @@ function renderApp() {
                     </div>
                     <div class="grid">${field(c, 'name', 'Nome')}${field(c, 'player', 'Jogador')}${field(c, 'scale', 'Escala')}${field(c, 'xp', 'XP', 'number')}</div></div>
                 <div class="card"><h3>Atributos</h3><div class="grid">${field(c, 'p', 'Poder (P)', 'number')}${field(c, 'h', 'Habilidade (H)', 'number')}${field(c, 'r', 'Resistência (R)', 'number')}</div></div>
-                ${archetypePanel(c)}
                 <div class="cards">${resource(c, 'pa', 'Pontos de Ação (PA)')}${resource(c, 'pm', 'Pontos de Mana (PM)')}${resource(c, 'pv', 'Pontos de Vida (PV)')}</div>
+                ${archetypePanel(c)}
                 <div class="card">${area(c, 'notes', 'Anotações')}</div>`;
         } else if (activeSheetTab === 'pericias') {
             subContent = renderSkills(c);
