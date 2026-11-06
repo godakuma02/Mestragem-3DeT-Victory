@@ -173,6 +173,23 @@
         display: flex; align-items: center; gap: 8px;
     }
     .conditions-badge-btn:hover { filter: brightness(1.1); }
+    .initiative-badge-btn {
+        position: fixed; bottom: 20px; left: 20px; z-index: 9999;
+        background: var(--primaria-escura); color: white; border: none;
+        border-radius: 30px; padding: 12px 20px; font-weight: bold;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3); cursor: pointer;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .initiative-badge-btn:hover { filter: brightness(1.15); }
+    .initiative-badge-btn.has-tie { background: var(--perigo-forte); animation: pulse-tie 1.2s infinite; }
+    @keyframes pulse-tie { 0%,100%{ opacity:1; } 50%{ opacity:0.6; } }
+    .initiative-list { list-style: none; padding: 0; margin: 0; }
+    .initiative-list li {
+        padding: 8px 10px; border-bottom: 1px solid var(--borda-clara);
+        display: flex; align-items: center; gap: 10px; font-size: 14px;
+    }
+    .initiative-list li.current-turn { background: rgba(242,178,51,0.25); font-weight: bold; border-radius: 6px; }
+    .initiative-list li.tied { background: rgba(192,90,58,0.12); }
 </style>
 </head>
 <body>
@@ -180,7 +197,7 @@
     <div id="topHeader">
         <h1>⚔️ 3DeT Victory — Gerenciador de Mesas</h1>
         <div class="status-bar">
-            <span class="mode-badge">Modo local • sem Supabase</span>
+            <span class="mode-badge"></span>
             <span id="status" class="muted">Dados armazenados neste navegador</span>
         </div>
     </div>
@@ -262,6 +279,7 @@ const AVATAR_BUCKET = 'avatars';
 let db = { tables: [], selected: null };
 let tab = 'personagens', selectedChar = null, session = null, selectedVehicle = null;
 let activeSheetTab = 'principal';
+let _iniciativaCache = null;
 
 const current = () => db.tables.find(t => t.id === db.selected);
 
@@ -439,6 +457,32 @@ async function carregarMesas() {
     });
     if (db.selected && !db.tables.find(t => t.id === db.selected)) db.selected = null;
     if (!db.selected && db.tables.length) db.selected = db.tables[0].id;
+}
+let _presencaTimer = null;
+function iniciarPollingPresenca() {
+    pararPollingPresenca();
+    if (session?.role !== 'mestre') return;
+    _presencaTimer = setInterval(async () => {
+        if (document.visibilityState !== 'visible') return;
+        if (tab !== 'personagens') return;
+        const mesa = current();
+        if (!mesa) return;
+        try {
+            const { data, error } = await supabaseClient
+                .from('personagens')
+                .select('id, ultima_atualizacao')
+                .eq('mesa_pin', mesa.id);
+            if (error || !data) return;
+            for (const row of data) {
+                const c = mesa.characters.find(x => x.id === row.id);
+                if (c) c._ultimaAtualizacao = row.ultima_atualizacao;
+            }
+            render();
+        } catch (_) {}
+    }, 60000);
+}
+function pararPollingPresenca() {
+    if (_presencaTimer) { clearInterval(_presencaTimer); _presencaTimer = null; }
 }
 
 async function carregarPersonagens(mesaPin) {
@@ -857,8 +901,17 @@ function roll(n) { return Array.from({ length: n }, () => 1 + Math.floor(Math.ra
 
 function doRoll() {
     let c = current()?.characters.find(x => x.id === selectedChar);
-    if (!c && currentVehicle()) c = currentVehicle();
+    const isVehicle = !c && currentVehicle();
+    if (isVehicle) c = currentVehicle();
     if (!c) return alert('Selecione uma ficha ativa.');
+    const chkIni = document.getElementById('rollIniciativa');
+    if (!isVehicle && chkIni && chkIni.checked) {
+        const skill = document.getElementById('rollSkill')?.value || '';
+        const ganho = Number(document.getElementById('rollGain')?.value) || 0;
+        const periciaTreinada = !!(skill && skill !== '__none__' && c.skills?.includes(skill));
+        rolarIniciativa(c.id, ganho, periciaTreinada);
+        return;
+    }
     let a = document.getElementById('rollAttr').value;
     let skill = document.getElementById('rollSkill').value;
     let bonus = Number(document.getElementById('rollBonus').value) || 0;
@@ -2662,6 +2715,7 @@ function renderVehicleSheet() {
             </div>
         </div>`;
     renderConditionsBadgeFloat();
+    renderInitiativeBadgeFloat();
     document.getElementById('mainContainer').classList.add('ficha-fullscreen');
     ['topHeader','mainToolbar','mainSessionRow','summary','tabs','mainFooter'].forEach(id => document.getElementById(id).style.display = 'none');
 }
@@ -2959,10 +3013,287 @@ function inventoryLimitsPanel(c) {
     </section>`;
 }
 
+// ============================================================
+// INICIATIVA
+// ============================================================
+function getIniciativa() {
+    const mesa = current();
+    if (!mesa) return null;
+    const ini = mesa.regras?.iniciativa;
+    if (!ini || !Array.isArray(ini.ordem)) return { ordem: [], empatados: [], turnoAtual: null };
+    if (!Array.isArray(ini.empatados)) ini.empatados = [];
+    ini.empatados = ini.empatados.map(g => Array.isArray(g) ? { ids: g, jaRolaram: [] } : { ids: g.ids || [], jaRolaram: g.jaRolaram || [] });
+    if (ini.turnoAtual === undefined) ini.turnoAtual = null;
+    return ini;
+}
+
+async function persistIniciativa(ini) {
+    const mesa = current();
+    if (!mesa) return;
+    const regras = { ...(mesa.regras || {}), iniciativa: ini };
+    mesa.regras = regras;
+    const { error } = await supabaseClient.from('mesas').update({ regras }).eq('pin', mesa.id);
+    if (error) { console.error('persistIniciativa:', error); alert('Erro ao salvar iniciativa: ' + error.message); }
+}
+
+function idsEmpatados(ini) {
+    const set = new Set();
+    (ini.empatados || []).forEach(g => {
+        const ids = Array.isArray(g) ? g : (g.ids || []);
+        ids.forEach(id => set.add(id));
+    });
+    return set;
+}
+
+function calcularIniciativa(ganho, pericia, habilidade) {
+    const n = 1 + Math.max(0, Number(ganho) || 0) + (pericia ? 1 : 0);
+    const dice = roll(n);
+    const total = dice.reduce((a, b) => a + b, 0) + (Number(habilidade) || 0);
+    return { dice, total, n };
+}
+
+function recalcularGruposEmpate(ini, gruposAnteriores) {
+    const anteriores = gruposAnteriores || ini.empatados || [];
+    const jaRolaramMap = {};
+    anteriores.forEach(g => {
+        const ids = Array.isArray(g) ? g : (g.ids || []);
+        const jr = Array.isArray(g) ? [] : (g.jaRolaram || []);
+        ids.forEach(id => { jaRolaramMap[id] = jr.includes(id); });
+    });
+    const grupos = {};
+    ini.ordem.forEach(o => { (grupos[o.valor] ||= []).push(o.charId); });
+    return Object.values(grupos)
+        .filter(ids => ids.length >= 2)
+        .map(ids => ({ ids, jaRolaram: ids.filter(id => jaRolaramMap[id] === true) }));
+}
+
+async function rolarIniciativa(charId, ganho, pericia) {
+    const mesa = current();
+    if (!mesa) return;
+    const c = mesa.characters.find(x => x.id === charId);
+    if (!c) return;
+    const ini = getIniciativa();
+    if (ini.ordem.some(o => o.charId === charId)) {
+        alert('Iniciativa já rolada para este personagem. Exclua-o da lista para rolar de novo.');
+        return;
+    }
+    const res = calcularIniciativa(ganho, pericia, c.h);
+    const entrada = { charId, nome: c.name, npc: c.npc === true, valor: res.total, ganho: Number(ganho) || 0, pericia: !!pericia };
+    ini.ordem.push(entrada);
+    ini.ordem.sort((a, b) => b.valor - a.valor);
+    ini.empatados = recalcularGruposEmpate(ini);
+    logMessage(`🎲 Iniciativa — ${c.name}: ${res.n}D [${res.dice.join(', ')}] + H${c.h} = ${res.total}. Ordem: ${ini.ordem.map((o, i) => `${i + 1}º ${o.nome} (${o.valor})`).join(' • ')}${ini.empatados.length ? ' ⚠ Empate!' : ''}`);
+    await persistIniciativa(ini);
+    _iniciativaCache = ini;
+    render();
+}
+
+async function rolarDesempate(charId) {
+    const mesa = current();
+    if (!mesa) return;
+    const ini = getIniciativa();
+    const entrada = ini.ordem.find(o => o.charId === charId);
+    if (!entrada) return;
+    const c = mesa.characters.find(x => x.id === charId);
+    if (!c) return;
+    const res = calcularIniciativa(entrada.ganho, entrada.pericia, c.h);
+
+    // Encontra o grupo de empate ao qual este char pertence
+    const grupoIdx = (ini.empatados || []).findIndex(g => (g.ids || []).includes(charId));
+    if (grupoIdx < 0) return;
+    const grupo = ini.empatados[grupoIdx];
+    if (!Array.isArray(grupo.jaRolaram)) grupo.jaRolaram = [];
+
+    // Guarda o resultado da re-rolagem no próprio registro (para exibição e ordenação)
+    entrada.valorDesempate = res.total;
+    if (!grupo.jaRolaram.includes(charId)) grupo.jaRolaram.push(charId);
+
+    // Reordena APENAS o bloco do grupo na lista global, preservando a faixa de posições
+    const posicoes = [];
+    ini.ordem.forEach((o, idx) => {
+        if ((grupo.ids || []).includes(o.charId)) posicoes.push(idx);
+    });
+    if (posicoes.length === grupo.ids.length) {
+        const membros = posicoes.map(idx => ini.ordem[idx]);
+        membros.sort((a, b) => {
+            const va = a.valorDesempate !== undefined ? a.valorDesempate : -Infinity;
+            const vb = b.valorDesempate !== undefined ? b.valorDesempate : -Infinity;
+            return vb - va;
+        });
+        posicoes.forEach((pos, i) => { ini.ordem[pos] = membros[i]; });
+    }
+
+    // Verifica se o grupo terminou de re-rolar e se ainda há empate interno nos desempates
+    const todosRolaram = grupo.ids.every(id => grupo.jaRolaram.includes(id));
+    let grupoResolvido = false;
+    if (todosRolaram) {
+        const valores = grupo.ids.map(id => {
+            const e = ini.ordem.find(o => o.charId === id);
+            return e ? (e.valorDesempate !== undefined ? e.valorDesempate : e.valor) : null;
+        }).filter(v => v !== null);
+        const unicos = new Set(valores);
+        if (unicos.size === valores.length) {
+            grupoResolvido = true;
+        } else {
+            // Ainda empata nos desempates: reinicia o ciclo do grupo
+            grupo.jaRolaram = [];
+        }
+    }
+
+    if (grupoResolvido) ini.empatados.splice(grupoIdx, 1);
+
+    const temPendente = ini.empatados.some(g => (g.ids || []).some(id => !(g.jaRolaram || []).includes(id)));
+    const msgStatus = ini.empatados.length === 0
+        ? ' ✓ Empate resolvido'
+        : (temPendente ? ' ⚠ Aguardando demais empatados re-rolarem' : ' ⚠ Ainda há empate — re-rolem novamente');
+    logMessage(`⚔ Desempate — ${c.name}: ${res.n}D [${res.dice.join(', ')}] + H${c.h} = ${res.total}. Ordem: ${ini.ordem.map((o, i) => `${i + 1}º ${o.nome} (${o.valor}${o.valorDesempate !== undefined ? ' → ' + o.valorDesempate : ''})`).join(' • ')}${msgStatus}`);
+    await persistIniciativa(ini);
+    _iniciativaCache = ini;
+    render();
+    if (document.getElementById('initiativeModal')) openInitiativeModal();
+}
+
+async function encerrarTurno() {
+    if (!requireMaster()) return;
+    const ini = getIniciativa();
+    if (!ini || ini.ordem.length === 0) return;
+    if ((ini.empatados || []).length > 0) { alert('Resolva todos os empates antes de encerrar o turno.'); return; }
+    const idxAtual = ini.ordem.findIndex(o => o.charId === ini.turnoAtual);
+    const idxProx = idxAtual < 0 ? 0 : (idxAtual + 1) % ini.ordem.length;
+    const anterior = idxAtual >= 0 ? ini.ordem[idxAtual] : null;
+    ini.turnoAtual = ini.ordem[idxProx].charId;
+    logMessage(`🔚 Turno de ${anterior ? anterior.nome : '(nenhum)'} encerrado. Próximo: ${ini.ordem[idxProx].nome}`);
+    await persistIniciativa(ini);
+    _iniciativaCache = ini;
+    render();
+    if (document.getElementById('initiativeModal')) openInitiativeModal();
+}
+
+async function limparIniciativa() {
+    if (!requireMaster()) return;
+    if (!confirm('Limpar toda a ordem de iniciativa (incluindo empates)?')) return;
+    const ini = { ordem: [], empatados: [], turnoAtual: null };
+    logMessage('🧹 Ordem de iniciativa limpa.');
+    await persistIniciativa(ini);
+    _iniciativaCache = ini;
+    render();
+    closeInitiativeModal();
+}
+
+async function excluirDaIniciativa(charId) {
+    if (!requireMaster()) return;
+    const ini = getIniciativa();
+    ini.ordem = ini.ordem.filter(o => o.charId !== charId);
+    if (ini.turnoAtual === charId) ini.turnoAtual = null;
+    // Remove o charId de qualquer grupo de empate. Se sobrar só 1, o grupo é dissolvido.
+    ini.empatados = (ini.empatados || [])
+        .map(g => {
+            const ids = (g.ids || []).filter(id => id !== charId);
+            const jaRolaram = (g.jaRolaram || []).filter(id => ids.includes(id));
+            return { ids, jaRolaram };
+        })
+        .filter(g => g.ids.length >= 2);
+    await persistIniciativa(ini);
+    _iniciativaCache = ini;
+    render();
+    if (ini.ordem.length === 0) closeInitiativeModal();
+    else if (document.getElementById('initiativeModal')) openInitiativeModal();
+}
+
+function renderInitiativeBadge() {
+    const ini = getIniciativa();
+    if (!ini || ini.ordem.length === 0) return '';
+    const hasTie = (ini.empatados || []).length > 0;
+    return `<button class="initiative-badge-btn ${hasTie ? 'has-tie' : ''}" onclick="openInitiativeModal()" title="Ver ordem de iniciativa">
+        ${hasTie ? '⚠' : '🎲'} Iniciativa (${ini.ordem.length})${hasTie ? ' — Desempate!' : ''}
+    </button>`;
+}
+
+function renderInitiativeBadgeFloat() {
+    const existing = document.getElementById('initiativeBadgeFloat');
+    if (existing) existing.remove();
+    const html = renderInitiativeBadge();
+    if (html) {
+        const div = document.createElement('div');
+        div.id = 'initiativeBadgeFloat';
+        div.innerHTML = html;
+        document.body.appendChild(div);
+    }
+}
+
+function openInitiativeModal() {
+    const ini = getIniciativa();
+    if (!ini || ini.ordem.length === 0) return;
+    const isMaster = session?.role === 'mestre';
+    const tieSet = idsEmpatados(ini);
+    const temEmpate = (ini.empatados || []).length > 0;
+    const meuId = session?.personagemId;
+
+    const jaRolaramSet = new Set();
+    (ini.empatados || []).forEach(g => (g.jaRolaram || []).forEach(id => jaRolaramSet.add(id)));
+
+    const itens = ini.ordem.map((o, i) => {
+        const tied = tieSet.has(o.charId);
+        const current = ini.turnoAtual === o.charId;
+        const jaRolou = jaRolaramSet.has(o.charId);
+        const podeDesempatar = tied && !jaRolou && (meuId === o.charId || isMaster);
+        const badgePendente = tied && jaRolou ? ' <span class="pill" style="font-size:10px;background:var(--secundaria);">já re-rolou</span>' : '';
+        const valorExibicao = o.valorDesempate !== undefined
+            ? `${o.valor} <span style="color:var(--texto-medio);font-size:11px;">(${o.valorDesempate})</span>`
+            : `${o.valor}`;
+        return `<li class="${current ? 'current-turn' : ''} ${tied ? 'tied' : ''}">
+            <strong style="width:32px;text-align:right;">${i + 1}º</strong>
+            <span style="flex:1;">${esc(o.nome)} ${o.npc ? '<span class="pill" style="font-size:10px;">NPC</span>' : ''} ${current ? ' ⬅ turno atual' : ''}${badgePendente}</span>
+            <span style="font-family:monospace;">${valorExibicao}</span>
+            ${podeDesempatar ? `<button class="secondary" style="padding:4px 8px;font-size:12px;" onclick="rolarDesempate('${o.charId}')">Desempatar</button>` : ''}
+            ${isMaster ? `<button class="danger" style="padding:4px 8px;font-size:12px;" onclick="excluirDaIniciativa('${o.charId}')">×</button>` : ''}
+        </li>`;
+    }).join('');
+
+    const avisoEmpate = temEmpate ? (() => {
+        const totalPendentes = ini.empatados.reduce((acc, g) => acc + g.ids.filter(id => !g.jaRolaram.includes(id)).length, 0);
+        const msg = totalPendentes > 0
+            ? `⚠ ${ini.empatados.length} grupo(s) empatado(s). ${totalPendentes} jogador(es) ainda precisam re-rolar.`
+            : `⚠ Todos já re-rolaram, mas ainda há ${ini.empatados.length} grupo(s) empatado(s). Re-rolem novamente.`;
+        return `<div style="background:rgba(192,90,58,0.15);border-left:4px solid var(--perigo-forte);padding:10px;border-radius:6px;margin-bottom:12px;">${msg}</div>`;
+    })() : '';
+
+    const botoesMestre = isMaster ? `<div class="row" style="margin-top:15px;">
+        <button ${temEmpate ? 'disabled title="Resolva os empates primeiro"' : ''} onclick="encerrarTurno()">🔚 Encerrar turno</button>
+        <button class="danger" onclick="limparIniciativa()">🧹 Limpar iniciativa</button>
+    </div>` : '';
+
+    const html = `<div class="conditions-modal-overlay" onclick="if(event.target === this) closeInitiativeModal()">
+        <div class="conditions-modal-content">
+            <div class="row" style="justify-content:space-between;margin-bottom:15px;">
+                <h3 style="margin:0;">🎲 Ordem de Iniciativa</h3>
+                <button class="secondary" onclick="closeInitiativeModal()">Fechar</button>
+            </div>
+            ${avisoEmpate}
+            <ul class="initiative-list">${itens}</ul>
+            ${botoesMestre}
+        </div>
+    </div>`;
+
+    const old = document.getElementById('initiativeModal');
+    if (old) old.remove();
+    const div = document.createElement('div');
+    div.id = 'initiativeModal';
+    div.innerHTML = html;
+    document.body.appendChild(div);
+}
+
+function closeInitiativeModal() {
+    const m = document.getElementById('initiativeModal');
+    if (m) m.remove();
+}
+
 // --- RENDERIZAÇÃO DA APLICAÇÃO ---
 function renderApp() {
     let t = current();
     let isMaster = session?.role === 'mestre';
+    if (isMaster && tab === 'personagens' && !selectedVehicle) iniciarPollingPresenca();
+    else pararPollingPresenca();
     if (selectedVehicle) { renderVehicleSheet(); return; }
 
     // [ONLINE] Garante que os dados da mesa selecionada estejam carregados
@@ -3004,7 +3335,7 @@ function renderApp() {
     if (tab === 'personagens') {
         out.innerHTML = `<div class="row"><button onclick="addChar(false)">+ Personagem</button><button class="secondary" onclick="addChar(true)">+ NPC</button></div>
         <div class="cards" style="margin-top:15px">${t.characters.map(c => `<article class="card">
-            <h3>${esc(c.name)} <span class="pill">${c.npc ? 'NPC' : 'Jogador'}</span></h3>
+            <h3>${esc(c.name)} <span class="pill">${c.npc ? 'NPC' : 'Jogador'}</span> ${!c.npc ? `<span title="${estaOnline(c._ultimaAtualizacao) ? 'Jogador online' : 'Jogador offline'}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${estaOnline(c._ultimaAtualizacao) ? '#2ecc71' : '#c0392b'};vertical-align:middle;margin-left:4px;"></span>` : ''}</h3>
             <p class="muted">${esc(c.player || 'Sem jogador atribuído')}</p>
             <p style="margin-top:6px;"><span class="pill" style="background:var(--primaria);color:#2b2b2b;font-weight:bold;font-family:monospace;font-size:13px;">🔑 ${esc(c.accessCode || '—')}</span></p>
             <p>P ${c.p} • H ${c.h} • R ${c.r}</p>
@@ -3097,6 +3428,10 @@ function renderApp() {
                             <input id="rollCritEnd" type="number" min="1" max="6" value="6" style="width: 100%;">
                         </div>
                     </div>
+                    <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px;">
+                        <input type="checkbox" id="rollIniciativa" style="width:auto;margin:0;">
+                        🎲 Rolar Iniciativa (1d6 + H + ganho + perícia)
+                    </label>
                     <button onclick="doRoll()" style="width:100%; margin-top:5px">Rolar Teste</button>
                 </div>
                 <div class="card chat-card">
@@ -3104,10 +3439,12 @@ function renderApp() {
                     <div id="chatFeed" class="log" style="height:280px">${t.logs.slice().reverse().map(l => `<p><span class="muted">${new Date(l.when).toLocaleTimeString()}</span><br>${esc(l.message)}</p>`).join('') || '<p>Sem rolagens no histórico.</p>'}</div>
                     <div class="row" style="margin-top:10px">
                         <button class="danger" onclick="clearLogs()">Limpar Chat</button>
+                        ${isMaster ? `<button onclick="encerrarTurno()" ${(getIniciativa()?.empatados || []).length > 0 ? 'disabled title="Resolva os empates primeiro"' : ''}>🔚 Encerrar Turno</button><button class="danger" onclick="limparIniciativa()">🧹 Limpar Iniciativa</button>` : ''}
                     </div>
                 </div>
             </div>`;
         renderConditionsBadgeFloat();
+        renderInitiativeBadgeFloat();
         return;
     }
 
@@ -3115,8 +3452,9 @@ if (tab === 'anotacoes') {
         out.innerHTML = `<div class="card"><h3>Notas da Campanha</h3><textarea style="min-height:330px" oninput="current().notes=this.value;save()">${esc(t.notes)}</textarea></div>`;
     }
 
-    // Renderiza a badge flutuante de condições
+    // Renderiza as badges flutuantes
     renderConditionsBadgeFloat();
+    renderInitiativeBadgeFloat();
 }
 
 function renderConditionsBadgeFloat() {
@@ -3213,6 +3551,7 @@ async function loginAsPlayer() {
 }
 
 function logout() {
+    pararPollingPresenca();
     // Tenta marcar offline antes de sair
     if (session?.role === 'jogador' && session.personagemId) {
         try {
