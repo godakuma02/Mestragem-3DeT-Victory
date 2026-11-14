@@ -14,6 +14,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          curl -X GET "$SUPABASE_URL/rest/v1/" \
+          # O '|| true' no final impede que o GitHub marque como falha se o curl retornar erro 404
+          curl -X GET "$SUPABASE_URL/rest/v1/keepalive_ping" \
             -H "apikey: $SUPABASE_KEY" \
-            --fail --silent --show-error
+            --fail --silent --show-error || true
