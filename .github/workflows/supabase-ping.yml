@@ -16,5 +16,4 @@ jobs:
         run: |
           curl -X GET "$SUPABASE_URL/rest/v1/" \
             -H "apikey: $SUPABASE_KEY" \
-            -H "Authorization: Bearer $SUPABASE_KEY" \
             --fail --silent --show-error
